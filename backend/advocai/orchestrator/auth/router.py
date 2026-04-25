@@ -20,7 +20,7 @@ import jwt
 from pydantic import BaseModel, EmailStr
 
 from .db import get_user_by_email, create_user, UserRecord
-from .config import JWT_SECRET, JWT_ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+from .config import JWT_SECRET, JWT_ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, DEMO_MODE, DEMO_USER_ID, DEMO_USER_EMAIL
 
 # ==============================================================================
 # ROUTER SETUP
@@ -28,7 +28,8 @@ from .config import JWT_SECRET, JWT_ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 
 # Create router with auth prefix and tags for API documentation
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-bearer_scheme = HTTPBearer()  # Handles Authorization: Bearer <token> header
+# In demo mode, make bearer scheme optional; otherwise require it
+bearer_scheme = HTTPBearer(auto_error=not DEMO_MODE)  # Handles Authorization: Bearer <token> header
 
 
 # ==============================================================================
@@ -156,22 +157,35 @@ def decode_token(token: str) -> dict:
 # ==============================================================================
 
 async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)] = None,
 ) -> UserRecord:
     """
     FastAPI dependency to extract and validate the current authenticated user.
     
-    Extracts JWT from Authorization header, decodes it, fetches user from database.
+    In DEMO_MODE: Returns a mock demo user without requiring authentication.
+    Otherwise: Extracts JWT from Authorization header, decodes it, fetches user from database.
     
     Args:
-        credentials: HTTP Bearer token credentials (automatically injected)
+        credentials: HTTP Bearer token credentials (automatically injected, optional in demo mode)
         
     Returns:
-        UserRecord object for the authenticated user
+        UserRecord object for the authenticated user (real or demo)
         
     Raises:
-        HTTPException 401: Invalid token or user not found
+        HTTPException 401: Invalid token or user not found (when not in demo mode)
     """
+    # Demo mode: bypass authentication
+    if DEMO_MODE:
+        return UserRecord(
+            id=DEMO_USER_ID,
+            email=DEMO_USER_EMAIL,
+            hashed_password="",
+        )
+    
+    # Production mode: require valid JWT
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing authorization token")
+    
     payload = decode_token(credentials.credentials)
     user = get_user_by_email(payload["email"])
     if not user:

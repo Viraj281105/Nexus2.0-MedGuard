@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 # ── MedGuard services (bill auditing) ────────────────────────────────
 from services.ocr_parser import parse_bill
 from services.anomaly_detector import detect_anomalies
-from services.speech_parser import parse_audio
+# from services.speech_parser import parse_audio  # Disabled for demo
 from services.pdf_generator import create_appeal_pdf
 from agents.orchestrator import AgentOrchestrator
 
