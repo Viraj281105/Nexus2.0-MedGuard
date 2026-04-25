@@ -5,6 +5,10 @@ from pydantic import BaseModel
 from typing import List, Optional
 import os
 import uuid
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from services.ocr_parser import parse_bill
 from services.anomaly_detector import detect_anomalies
@@ -40,8 +44,8 @@ async def upload_bill(file: UploadFile = File(...)):
     try:
         content = await file.read()
         
-        # 1. Parse bill using PyMuPDF + heuristics
-        parsed_items = parse_bill(content)
+        # 1. Parse bill using PyMuPDF + heuristics (or EasyOCR for images)
+        parsed_items = parse_bill(content, file.filename)
         
         # 2. Detect anomalies using CGHS benchmark
         result = detect_anomalies(parsed_items)

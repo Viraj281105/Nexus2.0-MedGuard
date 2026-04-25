@@ -1,17 +1,33 @@
 import fitz  # PyMuPDF
 import re
+import io
+import numpy as np
+import cv2
+import easyocr
 
-def parse_bill(file_bytes: bytes) -> list:
+# Initialize EasyOCR Reader globally (it downloads models on first run if not present)
+READER = easyocr.Reader(['en'], gpu=False)
+
+def parse_bill(file_bytes: bytes, filename: str = "bill.pdf") -> list:
     """
-    Parses a hospital bill PDF to extract line items and costs.
-    In a full ML setup, this would use LayoutLMv3.
-    Here we use PyMuPDF and regex to find amounts.
+    Parses a hospital bill PDF or Image to extract line items and costs.
+    Uses EasyOCR for images, PyMuPDF for PDFs.
     """
     try:
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
         text = ""
-        for page in doc:
-            text += page.get_text()
+        is_image = filename.lower().endswith(('.png', '.jpg', '.jpeg'))
+        
+        if is_image:
+            # Process image using EasyOCR
+            nparr = np.frombuffer(file_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            results = READER.readtext(img)
+            text = "\n".join([res[1] for res in results])
+        else:
+            # Process as PDF
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            for page in doc:
+                text += page.get_text()
             
         items = []
         # Simple heuristic: Look for lines with a price at the end
