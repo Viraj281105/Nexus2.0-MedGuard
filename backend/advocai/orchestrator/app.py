@@ -1,13 +1,5 @@
 """
 orchestrator/app.py — AdvocAI FastAPI Application
-
-Main entry point for the AdvocAI API server.
-Provides endpoints for:
-- Case submission and processing
-- Real-time event streaming (SSE)
-- Case management (list, delete, status, result)
-- Appeal rescoring with judge feedback
-- PDF packet download
 """
 
 import asyncio
@@ -19,7 +11,6 @@ import logging
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Load environment variables from .env file at project root
 env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
@@ -29,26 +20,19 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, Bac
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
-# Authentication module
 from .auth import router as auth_router, ensure_users_table
 from .auth.config import DEMO_MODE
 from pydantic import BaseModel
 from .auth.db import UserRecord, create_case, get_user_cases, get_case_by_id, delete_case, update_case_status
 
-# Mock user for demo mode
 class MockUser:
     id = 1
     email = "demo@medguard.ai"
 
-# Main pipeline orchestration
 from .main import orchestrate_advocai_workflow, initialize_llm_client
-
-# Session management utilities
 from ..storage.session_manager import get_cases_for_user, delete_case_for_user
 
-# Configure logging
 logger = logging.getLogger("AdvocAI.App")
-# Configure file handler for persistent logs
 log_dir = Path('logs')
 log_dir.mkdir(exist_ok=True)
 file_handler = logging.FileHandler(log_dir / 'backend.log')
@@ -64,51 +48,34 @@ logger.propagate = False
 
 app = FastAPI(title="AdvocAI API", version="2.0.0")
 
-
-
 @app.on_event("startup")
 async def startup():
-    """
-    Initialize application on startup.
-    Ensures users table exists in PostgreSQL (if available).
-    Initializes database schema from schema.sql if using PostgreSQL.
-    """
     logger.info("=" * 60)
     logger.info("AdvocAI Backend Startup")
     logger.info("=" * 60)
-    
     if DEMO_MODE:
         logger.warning("⚠️  DEMO MODE ENABLED - Authentication Bypassed!")
-        logger.warning("    All endpoints accessible without JWT token")
-        logger.warning("    Demo user: demo@advocai.local (ID: 999)")
     else:
         logger.info("✓ Authentication required - Production mode")
     logger.info("=" * 60)
-    
     try:
         ensure_users_table()
         logger.info("✓ Database initialization complete")
     except Exception as error:
-        logger.warning(f"⚠️  Could not ensure users table (DB may not be available): {error}")
-        logger.warning("   Some features may be unavailable. Check your database connection.")
+        logger.warning(f"⚠️  Could not ensure users table: {error}")
 
-
-# Configure CORS to allow frontend connections
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],           # Allow all origins (adjust for production)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],           # Allow all HTTP methods
-    allow_headers=["*"],           # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ==============================================================================
 # IN-MEMORY SESSION STORE
 # ==============================================================================
 
-# Active session storage for real-time event streaming.
-# Persisted data (cases, users) is stored in PostgreSQL.
-# This dict holds ephemeral data for active processing sessions only.
 ACTIVE_SESSIONS: dict = {}
 
 
@@ -117,14 +84,11 @@ ACTIVE_SESSIONS: dict = {}
 # ==============================================================================
 
 @app.post("/api/submit")
-async def submit_case(background_tasks: BackgroundTasks,
-    # Optional: bill PDF (for bill analysis)
+async def submit_case(
+    background_tasks: BackgroundTasks,
     bill_pdf: UploadFile = File(None),
-    # Optional: claim PDF (for denial analysis)
     claim_pdf: UploadFile = File(None),
-    # Required: insurance policy document
     policy_pdf: UploadFile = File(...),
-    # Case metadata fields
     patient_name: str = Form(...),
     insurer_name: str = Form(...),
     procedure_billed: str = Form(None),
@@ -134,43 +98,25 @@ async def submit_case(background_tasks: BackgroundTasks,
     notes: str = Form(""),
     analysis_type: str = Form("bill"),
 ):
-    """
-    Submit a new case for AI analysis.
-    
-    Requires valid JWT token in Authorization header.
-    
-    Workflow:
-    1. Validate input (at least one of bill_pdf or claim_pdf)
-    2. Create session directory and save uploaded files
-    3. Create database record for the case
-    4. Initialize in-memory session for event streaming
-    5. Launch async pipeline task
-    6. Return session_id to client
-    """
-    # Determine which document was submitted (bill or claim/denial letter)
     denial_document = bill_pdf or claim_pdf
     if not denial_document:
         raise HTTPException(status_code=400, detail="Either bill_pdf or claim_pdf is required")
-    
-    # Extract procedure/issue from form data
+
     procedure_denied = procedure_billed or claim_issue or ""
     denial_date = bill_date or claim_date or ""
-    
-    # Generate unique session ID and create session directory
+
     session_id = str(uuid.uuid4())
     session_dir = Path(f"sessions/{session_id}")
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine file extensions for saved documents
     denial_extension = Path(denial_document.filename).suffix.lower()
     if denial_extension not in [".pdf", ".jpg", ".jpeg", ".png"]:
         denial_extension = ".pdf"
-    
+
     policy_extension = Path(policy_pdf.filename).suffix.lower()
     if policy_extension not in [".pdf", ".jpg", ".jpeg", ".png"]:
         policy_extension = ".pdf"
 
-    # Build file paths and save uploaded files
     denial_path = session_dir / f"denial{denial_extension}"
     policy_path = session_dir / f"policy{policy_extension}"
 
@@ -178,7 +124,6 @@ async def submit_case(background_tasks: BackgroundTasks,
     policy_path.write_bytes(await policy_pdf.read())
 
     try:
-        # Step 1: Create database record for the case
         case = create_case(
             user_id=MockUser.id,
             patient_name=patient_name,
@@ -190,11 +135,9 @@ async def submit_case(background_tasks: BackgroundTasks,
             policy_path=str(policy_path),
             status="queued",
         )
-        
-        # Step 2: Use UUID from database for consistency
+
         actual_session_id = str(case.session_id)
-        
-        # Step 3: Initialize in-memory event store for real-time updates
+
         ACTIVE_SESSIONS[actual_session_id] = {
             "status": "queued",
             "events": [],
@@ -210,12 +153,11 @@ async def submit_case(background_tasks: BackgroundTasks,
             },
         }
 
-        # Step 4: Launch async pipeline task (non-blocking)
         logger.info(f"Launching pipeline for session {actual_session_id}")
         background_tasks.add_task(_run_pipeline_task, actual_session_id)
-        
+
         return {"session_id": actual_session_id, "status": "queued"}
-    
+
     except Exception as error:
         logger.error(f"Error creating case: {error}")
         raise HTTPException(status_code=500, detail=f"Error creating case: {str(error)}")
@@ -227,11 +169,6 @@ async def submit_case(background_tasks: BackgroundTasks,
 
 @app.get("/api/cases")
 async def list_cases():
-    """
-    List all cases from the database.
-    
-    Returns a simplified case list with key metadata.
-    """
     try:
         user_cases = get_user_cases(MockUser.id)
         cases = [
@@ -252,24 +189,13 @@ async def list_cases():
 
 
 @app.delete("/api/case/{session_id}", status_code=204)
-async def delete_case_endpoint(
-    session_id: str,
-):
-    """
-    Delete a case by session_id.
-    
-    Also removes the case from the in-memory active sessions store.
-    """
+async def delete_case_endpoint(session_id: str):
     try:
-        # Delete from database
         success = delete_case(MockUser.id, session_id)
         if not success:
             raise HTTPException(status_code=404, detail="Case not found")
-        
-        # Clean up in-memory session if exists
         if session_id in ACTIVE_SESSIONS:
             del ACTIVE_SESSIONS[session_id]
-    
     except Exception as error:
         logger.error(f"Error deleting case: {error}")
         raise HTTPException(status_code=500, detail=f"Error deleting case: {str(error)}")
@@ -280,32 +206,22 @@ async def delete_case_endpoint(
 # ==============================================================================
 
 async def _run_pipeline_task(session_id: str):
-    """
-    Background task that runs the multi-agent pipeline.
-    
-    Updates database status and emits events to the SSE stream.
-    
-    Args:
-        session_id: Unique identifier for the case
-    """
+    """Background task that runs the multi-agent pipeline."""
     logger.info(f"_run_pipeline_task STARTED for {session_id}")
     session = ACTIVE_SESSIONS.get(session_id)
     if not session:
         logger.error(f"Session {session_id} not found in active sessions")
         return
-    
-    # Update status to running
+
     session["status"] = "running"
     update_case_status(session_id, "running")
 
     def emit(event: dict):
-        """Helper function to add events to session event log."""
         session["events"].append(event)
 
     try:
         meta = session["meta"]
-        
-        # Run the main orchestration workflow (blocking, run in thread pool)
+
         result = await asyncio.to_thread(
             orchestrate_advocai_workflow,
             client=initialize_llm_client(),
@@ -315,26 +231,49 @@ async def _run_pipeline_task(session_id: str):
             emit=emit,
         )
 
-        # Update session with successful result
         session["result"] = result
         session["status"] = "done"
         update_case_status(session_id, "done")
 
-        # Compile PDF appeal packet from agent outputs
+        # ── PDF compilation with detailed error logging ───────────────────
+        # Previously this was a silent try/except — the PDF never got built
+        # and download always returned 404. Now we log the full error and
+        # fall back to writing the plain-text appeal letter as a PDF so the
+        # download endpoint always has something to serve.
+        pdf_path = Path(f"sessions/{session_id}/appeal_packet.pdf")
         try:
             from ..tools.pdf_compiler import compile_appeal_packet
             compile_appeal_packet(
                 case_dir=f"data/output/{session_id}",
-                output_path=f"sessions/{session_id}/appeal_packet.pdf"
+                output_path=str(pdf_path),
             )
+            logger.info(f"PDF compiled successfully: {pdf_path}")
         except Exception as pdf_error:
-            logger.warning(f"PDF compile failed: {pdf_error}")
+            logger.error(f"PDF compile failed for {session_id}: {pdf_error}", exc_info=True)
 
-        # Signal completion to SSE stream
+            # Fallback: write the barrister's appeal letter as a minimal PDF
+            # using the built-in pdf_generator so the download link still works.
+            try:
+                appeal_text = ""
+                if result and "barrister" in result:
+                    barrister = result["barrister"]
+                    appeal_text = (
+                        barrister if isinstance(barrister, str)
+                        else barrister.get("appeal_letter", str(barrister))
+                    )
+
+                if appeal_text:
+                    from services.pdf_generator import create_appeal_pdf
+                    create_appeal_pdf(appeal_text, str(pdf_path))
+                    logger.info(f"Fallback PDF written to {pdf_path}")
+                else:
+                    logger.warning(f"No appeal text available for fallback PDF ({session_id})")
+            except Exception as fallback_error:
+                logger.error(f"Fallback PDF also failed: {fallback_error}", exc_info=True)
+
         emit({"type": "pipeline_done", "session_id": session_id})
 
     except Exception as error:
-        # Handle pipeline failure
         session["status"] = "error"
         update_case_status(session_id, "error")
         emit({"type": "error", "message": str(error)})
@@ -346,41 +285,78 @@ async def _run_pipeline_task(session_id: str):
 # ==============================================================================
 
 @app.get("/api/case/{session_id}/stream")
-async def stream_case(
-    session_id: str,
-):
+async def stream_case(session_id: str):
     """
-    Server-Sent Events (SSE) endpoint for real-time case processing updates.
-    
-    Streams events as they are generated by the pipeline.
+    SSE endpoint for real-time pipeline updates.
+
+    FIX: Previously raised 404 immediately if the session wasn't yet in
+    ACTIVE_SESSIONS (race condition between page load and pipeline start).
+    Now waits up to 10 seconds for the session to appear before giving up.
     """
-    if session_id not in ACTIVE_SESSIONS:
-        raise HTTPException(status_code=404, detail="Session not active")
+    # Wait up to 10 s for the session to be registered (handles race condition
+    # where the frontend connects before the background task has populated
+    # ACTIVE_SESSIONS, e.g. very fast page navigation after form submit).
+    for _ in range(100):
+        if session_id in ACTIVE_SESSIONS:
+            break
+        await asyncio.sleep(0.1)
+    else:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        """Generate SSE events for the client."""
         session = ACTIVE_SESSIONS[session_id]
         sent_index = 0
-        max_wait = 120  # Maximum wait time in seconds (120 sec = 2 minutes)
+        max_wait = 120
 
-        # Loop until timeout or completion
-        for _ in range(max_wait * 10):  # Check every 0.1 seconds
+        # FIX: If the pipeline already completed before the SSE client connected
+        # (common — the browser navigates after submit, pipeline runs in background),
+        # the agent_stream events were emitted before anyone was listening so the
+        # text panel shows empty. Replay the full letter as a single chunk now.
+        if session["status"] == "done":
+            result = session.get("result") or {}
+            barrister = result.get("barrister")
+            if barrister:
+                letter_text = (
+                    barrister if isinstance(barrister, str)
+                    else barrister.get("appeal_letter", str(barrister))
+                )
+                if letter_text:
+                    # Emit synthetic agent lifecycle events so the UI pipeline
+                    # indicators all show green, then deliver the full letter.
+                    for agent in ["auditor", "clinician", "regulatory", "barrister", "judge"]:
+                        yield f"data: {json.dumps({'type': 'agent_done', 'agent': agent, 'output': {}})}\n\n"
+
+                    yield f"data: {json.dumps({'type': 'agent_stream', 'agent': 'barrister', 'chunk': letter_text})}\n\n"
+
+                    # Also emit judge score if available
+                    judge = result.get("judge")
+                    if judge:
+                        score = (
+                            judge.get("overall_score")
+                            if isinstance(judge, dict)
+                            else getattr(judge, "overall_score", None)
+                        )
+                        if score is not None:
+                            yield f"data: {json.dumps({'type': 'agent_done', 'agent': 'judge', 'output': {'score': score}})}\n\n"
+
+                    yield f"data: {json.dumps({'type': 'close'})}\n\n"
+                    return
+
+        # Normal path: pipeline still running, stream events as they arrive
+        for _ in range(max_wait * 10):
             events = session["events"]
-            
-            # Send any new events
+
             while sent_index < len(events):
                 event = events[sent_index]
                 sent_index += 1
                 yield f"data: {json.dumps(event)}\n\n"
 
-            # Exit if pipeline is complete or errored
             if session["status"] in ("done", "error"):
                 yield f"data: {json.dumps({'type': 'close'})}\n\n"
                 return
 
-            await asyncio.sleep(0.1)  # Small delay to prevent CPU spinning
+            await asyncio.sleep(0.1)
 
-        # Timeout reached
         yield f"data: {json.dumps({'type': 'timeout'})}\n\n"
 
     return StreamingResponse(
@@ -388,7 +364,7 @@ async def stream_case(
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         },
     )
@@ -399,21 +375,22 @@ async def stream_case(
 # ==============================================================================
 
 @app.get("/api/case/{session_id}/status")
-async def get_status(
-    session_id: str,
-):
+async def get_status(session_id: str):
     """
     Get the current status of a case.
-    
-    Returns both persisted database status and in-memory event log.
+
+    FIX: Previously 404'd if session wasn't in ACTIVE_SESSIONS (e.g. after
+    server restart). Now falls back to the database record for status.
     """
-    if session_id not in ACTIVE_SESSIONS:
-        raise HTTPException(status_code=404, detail="Session not found")
+    case = get_case_by_id(MockUser.id, session_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
 
     session = ACTIVE_SESSIONS.get(session_id, {})
-    case = get_case_by_id(MockUser.id, session_id)
-    status = case.status if case else "unknown"
-    
+    # Prefer in-memory status (more up-to-date during active run),
+    # fall back to DB status (survives server restarts).
+    status = session.get("status") or case.status
+
     return {
         "session_id": session_id,
         "status": status,
@@ -422,22 +399,14 @@ async def get_status(
 
 
 @app.get("/api/case/{session_id}/result")
-async def get_result(
-    session_id: str,
-):
-    """
-    Get the final result of a completed case.
-    
-    Returns all agent outputs (auditor, clinician, regulatory, barrister, judge).
-    """
+async def get_result(session_id: str):
     case = get_case_by_id(MockUser.id, session_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # Check if pipeline is still running
     if case.status != "done":
         raise HTTPException(status_code=202, detail="Pipeline still running")
-    
+
     session = ACTIVE_SESSIONS.get(session_id, {})
     return session.get("result", {})
 
@@ -447,25 +416,11 @@ async def get_result(
 # ==============================================================================
 
 class RescoreRequest(BaseModel):
-    """
-    Request body for rescoring a case with edited appeal text.
-    
-    Attributes:
-        edited_text: User-edited version of the appeal letter
-    """
     edited_text: str
 
 
 @app.post("/api/case/{session_id}/rescore")
-async def rescore_case(
-    session_id: str,
-    request: RescoreRequest,
-):
-    """
-    Rescore a case with user-edited appeal text.
-    
-    Re-runs the Judge agent on the edited text and updates the session.
-    """
+async def rescore_case(session_id: str, request: RescoreRequest):
     if session_id not in ACTIVE_SESSIONS:
         raise HTTPException(status_code=404, detail="Session not active")
 
@@ -473,23 +428,19 @@ async def rescore_case(
     from .main import save_json_to_file, initialize_llm_client
     from ..agents.judge import run_judge_agent
 
-    # Save edited text as barrister output
     SessionManager.save_checkpoint(session_id, "barrister", {}, request.edited_text)
     case_output_dir = os.path.join("data", "output", session_id)
     os.makedirs(case_output_dir, exist_ok=True)
     save_json_to_file(request.edited_text, os.path.join(case_output_dir, "barrister_output.txt"))
 
-    # Run Judge agent on edited text
     try:
         scorecard = await asyncio.to_thread(run_judge_agent, session_dir=case_output_dir)
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
 
-    # Save scorecard to disk
     scorecard_dump = scorecard.model_dump() if hasattr(scorecard, "model_dump") else scorecard
     save_json_to_file(scorecard_dump, os.path.join(case_output_dir, "judge_scorecard.json"))
 
-    # Update in-memory session with new data
     session = ACTIVE_SESSIONS[session_id]
     if session.get("result") and "barrister" in session["result"]:
         session["result"]["barrister"] = request.edited_text
@@ -503,20 +454,34 @@ async def rescore_case(
 # ==============================================================================
 
 @app.get("/api/case/{session_id}/download")
-async def download_packet(
-    session_id: str,
-):
+async def download_packet(session_id: str):
     """
     Download the complete appeal packet as a PDF.
+
+    FIX: Added clearer error message distinguishing 'still processing'
+    from 'PDF generation failed', and verified session existence first.
     """
+    # Check session/case exists at all
+    case = get_case_by_id(MockUser.id, session_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
     pdf_path = Path(f"sessions/{session_id}/appeal_packet.pdf")
+
     if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail="PDF not yet generated")
-    
+        # Give a more informative error depending on pipeline state
+        status = ACTIVE_SESSIONS.get(session_id, {}).get("status") or case.status
+        if status in ("queued", "running"):
+            raise HTTPException(status_code=202, detail="PDF not ready yet — pipeline still running")
+        raise HTTPException(
+            status_code=404,
+            detail="PDF generation failed or is unavailable. Check backend logs."
+        )
+
     return FileResponse(
         path=str(pdf_path),
         media_type="application/pdf",
-        filename=f"appeal_{session_id}.pdf"
+        filename=f"appeal_{session_id[:8]}.pdf",
     )
 
 
@@ -526,7 +491,4 @@ async def download_packet(
 
 @app.get("/health")
 async def health():
-    """
-    Health check endpoint for monitoring and load balancers.
-    """
     return {"status": "ok", "active_sessions": len(ACTIVE_SESSIONS)}

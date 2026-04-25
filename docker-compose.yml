@@ -13,9 +13,9 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
-      POSTGRES_DB: advocai
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: advocai123
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
@@ -37,29 +37,28 @@ services:
       db:
         condition: service_healthy
     environment:
-      # LLM
-      LLM_BACKEND: groq
+      LLM_BACKEND: ${LLM_BACKEND}
       GROQ_API_KEY: ${GROQ_API_KEY}
-      GROQ_MODEL: ${GROQ_MODEL:-llama3-70b-8192}
-
-      # Database
+      GROQ_MODEL: ${GROQ_MODEL}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
-      POSTGRES_DB: advocai
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: advocai123
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       PERSISTENCE_BACKEND: postgres
-
-      # Auth
-      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
-
-      # PubMed
-      PUBMED_API_KEY: ${PUBMED_API_KEY:-}
+      JWT_SECRET: ${JWT_SECRET}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES}
+      PUBMED_API_KEY: ${PUBMED_API_KEY}
+      HF_TOKEN: ${HF_TOKEN}
     ports:
       - "8000:8000"
     volumes:
       - backend_sessions:/app/sessions
       - backend_data:/app/data
+      - easyocr_models:/root/.EasyOCR
+      - hf_models:/root/.cache/huggingface
 
   # ── Frontend (Next.js) ─────────────────────────────────────────────
   frontend:
@@ -70,7 +69,8 @@ services:
     depends_on:
       - backend
     environment:
-      NEXT_PUBLIC_API_URL: http://backend:8000
+      API_URL: http://backend:8000
+      NEXT_PUBLIC_API_URL: http://localhost:8000
     ports:
       - "3000:3000"
 
@@ -78,3 +78,5 @@ volumes:
   pgdata:
   backend_sessions:
   backend_data:
+  easyocr_models:
+  hf_models:
