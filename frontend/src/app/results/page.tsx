@@ -31,7 +31,7 @@ export default function Results() {
   const handleGenerateAppeal = async () => {
     setIsGenerating(true);
     try {
-      const response = await fetch("http://localhost:8000/api/generate-appeal", { method: "POST" });
+      const response = await fetch("/api/generate-appeal", { method: "POST" });
       if (response.ok) {
         const result = await response.json();
         setAppealLink(result.download_url);

@@ -28,9 +28,9 @@ echo.
 echo Starting FastAPI on port 8000...
 echo.
 echo  Frontend  -> http://localhost:3000
-echo  Backend   -> http://localhost:8000
-echo  API Docs  -> http://localhost:8000/docs
+echo  Backend   -> http://127.0.0.1:8000
+echo  API Docs  -> http://127.0.0.1:8000/docs
 echo.
-python -m uvicorn main:app --reload --port 8000
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
 pause
