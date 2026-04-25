@@ -25,6 +25,7 @@ import { Header } from "@/components/Header";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { Badge } from "@/components/Badge";
+import { addToast } from "@/lib/toast";
 
 const fadeInUp = {
   initial: { opacity: 0, y: 20 },
@@ -141,6 +142,16 @@ export default function Home() {
     }
   }, [isListening]);
 
+  const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/jpg"];
+
+  const validateFileType = (file: File): boolean => {
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      addToast("Only PDF, JPG, and PNG files are supported", "error");
+      return false;
+    }
+    return true;
+  };
+
   const handleDrag = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -169,14 +180,18 @@ export default function Home() {
     e.stopPropagation();
     dragDepth.current = 0;
     setDragActive(false);
-    if (e.dataTransfer.files?.[0]) {
-      setFile(e.dataTransfer.files[0]);
+    const droppedFile = e.dataTransfer.files?.[0];
+    if (droppedFile && !validateFileType(droppedFile)) return;
+    if (droppedFile) {
+      setFile(droppedFile);
     }
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]) {
-      setFile(e.target.files[0]);
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile && !validateFileType(selectedFile)) return;
+    if (selectedFile) {
+      setFile(selectedFile);
     }
   };
 
@@ -201,6 +216,7 @@ export default function Home() {
         analysisType: analysisType,
       }));
       localStorage.setItem("medguard_pending_file_name", file.name);
+      addToast("File uploaded successfully", "success");
       router.push("/submit");
     } catch (err) {
       console.error(err);
@@ -228,6 +244,7 @@ export default function Home() {
         })
       );
       localStorage.setItem("medguard_pending_file_name", file.name);
+      addToast("Using demo data. Upload failed.", "warning");
       router.push("/submit");
     } finally {
       setIsUploading(false);
@@ -519,13 +536,27 @@ export default function Home() {
                       </p>
 
                       {transcript && (
-                        <motion.div
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: "auto" }}
-                          className="w-full rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 to-emerald-50 p-4 text-sm text-slate-700 leading-relaxed shadow-sm"
-                        >
-                          {transcript}
-                        </motion.div>
+                        <>
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: "auto" }}
+                            className="w-full rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 to-emerald-50 p-4 text-sm text-slate-700 leading-relaxed shadow-sm"
+                          >
+                            {transcript}
+                          </motion.div>
+                          <Button
+                            onClick={() => {
+                              localStorage.setItem("medguard_voice_transcript", transcript);
+                              localStorage.setItem("medguard_voice_analysistype", analysisType);
+                              router.push("/submit");
+                            }}
+                            fullWidth
+                            size="md"
+                            className="bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] text-white shadow-md hover:shadow-lg hover:shadow-blue-300/30 transition-all duration-300 font-semibold"
+                          >
+                            Continue with Transcript
+                          </Button>
+                        </>
                       )}
 
                       {!transcript && !isListening && (

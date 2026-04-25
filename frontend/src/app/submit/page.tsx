@@ -1,31 +1,192 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { ShieldCheck, Upload, FileText, ArrowRight, ArrowLeft, Loader2, CheckCircle, ClipboardCheck } from "lucide-react";
 import { apiUrl } from "@/lib/api";
+import { saveToHistory } from "@/lib/history";
+import { addToast } from "@/lib/toast";
 
 type AnalysisType = "bill" | "insurance";
 
+const STORAGE_KEY = "medguard_submit_draft";
+
+interface SavedDraft {
+  step: number;
+  analysisType: AnalysisType;
+  billFileName: string | null;
+  policyFileName: string | null;
+  patientName: string;
+  insurerName: string;
+  procedureOrIssue: string;
+  date: string;
+  notes: string;
+}
+
 export default function SubmitPage() {
   const router = useRouter();
-  const [step, setStep] = useState(1);
-  const [analysisType, setAnalysisType] = useState<AnalysisType>("bill");
+  const [step, setStep] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const draft: SavedDraft = JSON.parse(saved);
+          return draft.step || 1;
+        } catch {}
+      }
+    }
+    return 1;
+  });
+  const [analysisType, setAnalysisType] = useState<AnalysisType>(() => {
+    if (typeof window !== "undefined") {
+      const voiceType = localStorage.getItem("medguard_voice_analysistype");
+      if (voiceType === "bill" || voiceType === "insurance") {
+        localStorage.removeItem("medguard_voice_analysistype");
+        return voiceType;
+      }
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const draft: SavedDraft = JSON.parse(saved);
+          return draft.analysisType || "bill";
+        } catch {}
+      }
+    }
+    return "bill";
+  });
   const [billFile, setBillFile] = useState<File | null>(null);
+  const [billFileName, setBillFileName] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      const pendingName = localStorage.getItem("medguard_pending_file_name");
+      if (pendingName) {
+        localStorage.removeItem("medguard_pending_file_name");
+        return pendingName;
+      }
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const draft: SavedDraft = JSON.parse(saved);
+          return draft.billFileName || null;
+        } catch {}
+      }
+    }
+    return null;
+  });
   const [policyFile, setPolicyFile] = useState<File | null>(null);
-  const [patientName, setPatientName] = useState("");
-  const [insurerName, setInsurerName] = useState("");
-  const [procedureOrIssue, setProcedureOrIssue] = useState("");
-  const [date, setDate] = useState("");
-  const [notes, setNotes] = useState("");
+  const [policyFileName, setPolicyFileName] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const draft: SavedDraft = JSON.parse(saved);
+          return draft.policyFileName || null;
+        } catch {}
+      }
+    }
+    return null;
+  });
+  const [patientName, setPatientName] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const draft: SavedDraft = JSON.parse(saved);
+          return draft.patientName || "";
+        } catch {}
+      }
+    }
+    return "";
+  });
+  const [insurerName, setInsurerName] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const draft: SavedDraft = JSON.parse(saved);
+          return draft.insurerName || "";
+        } catch {}
+      }
+    }
+    return "";
+  });
+  const [procedureOrIssue, setProcedureOrIssue] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const draft: SavedDraft = JSON.parse(saved);
+          return draft.procedureOrIssue || "";
+        } catch {}
+      }
+    }
+    return "";
+  });
+  const [date, setDate] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const draft: SavedDraft = JSON.parse(saved);
+          return draft.date || "";
+        } catch {}
+      }
+    }
+    return "";
+  });
+  const [notes, setNotes] = useState(() => {
+    if (typeof window !== "undefined") {
+      const transcript = localStorage.getItem("medguard_voice_transcript");
+      if (transcript) {
+        localStorage.removeItem("medguard_voice_transcript");
+        return transcript;
+      }
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const draft: SavedDraft = JSON.parse(saved);
+          return draft.notes || "";
+        } catch {}
+      }
+    }
+    return "";
+  });
   const [submitting, setSubmitting] = useState(false);
+
+  const [dragActiveStep1, setDragActiveStep1] = useState(false);
+  const [dragActiveStep2, setDragActiveStep2] = useState(false);
+  const dragDepthStep1 = useRef(0);
+  const dragDepthStep2 = useRef(0);
 
   const isBill = analysisType === "bill";
 
+  const saveDraft = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const draft: SavedDraft = {
+      step,
+      analysisType,
+      billFileName,
+      policyFileName,
+      patientName,
+      insurerName,
+      procedureOrIssue,
+      date,
+      notes,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
+  }, [step, analysisType, billFileName, policyFileName, patientName, insurerName, procedureOrIssue, date, notes]);
+
+  useEffect(() => {
+    saveDraft();
+  }, [saveDraft]);
+
+  const clearDraft = () => {
+    localStorage.removeItem(STORAGE_KEY);
+  };
+
   const canNext = () => {
-    if (step === 1) return !!billFile;
-    if (step === 2) return !!policyFile;
+    if (step === 1) return !!billFile || !!billFileName;
+    if (step === 2) return !!policyFile || !!policyFileName;
     if (step === 3) return patientName.length >= 2 && insurerName.length > 0 && procedureOrIssue.length > 0;
     return true;
   };
@@ -34,8 +195,8 @@ export default function SubmitPage() {
     setSubmitting(true);
     try {
       const formData = new FormData();
-      formData.append(isBill ? "bill_pdf" : "claim_pdf", billFile!);
-      formData.append("policy_pdf", policyFile!);
+      if (billFile) formData.append(isBill ? "bill_pdf" : "claim_pdf", billFile);
+      if (policyFile) formData.append("policy_pdf", policyFile);
       formData.append("patient_name", patientName);
       formData.append("insurer_name", insurerName);
       formData.append(isBill ? "procedure_billed" : "claim_issue", procedureOrIssue);
@@ -43,13 +204,114 @@ export default function SubmitPage() {
       formData.append("notes", notes);
       formData.append("analysis_type", analysisType);
 
+      saveToHistory({
+        type: analysisType,
+        patientName,
+        insurerName,
+        procedureOrIssue,
+        date,
+        savings: 0,
+        findingsCount: 0,
+        confidence: 0,
+      });
+
+      clearDraft();
+      addToast("Case submitted successfully", "success");
+
       let sessionId = "demo_" + Date.now();
       try {
         const res = await fetch(apiUrl("/api/submit"), { method: "POST", body: formData });
         if (res.ok) { const d = await res.json(); sessionId = d.session_id || sessionId; }
       } catch { /* fallback */ }
       router.push(`/case/${sessionId}`);
-    } catch { setSubmitting(false); }
+    } catch {
+      addToast("Submission failed. Please try again.", "error");
+      setSubmitting(false);
+    }
+  };
+
+  const handleBillFileChange = (file: File | null) => {
+    if (file && !validateFileType(file)) return;
+    setBillFile(file);
+    setBillFileName(file ? file.name : null);
+  };
+
+  const handlePolicyFileChange = (file: File | null) => {
+    if (file && !validateFileType(file)) return;
+    setPolicyFile(file);
+    setPolicyFileName(file ? file.name : null);
+  };
+
+  const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/jpg"];
+
+  const validateFileType = (file: File): boolean => {
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      addToast("Only PDF, JPG, and PNG files are supported", "error");
+      return false;
+    }
+    return true;
+  };
+
+  const handleDragStep1 = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+
+    if (e.type === "dragenter") {
+      dragDepthStep1.current += 1;
+      setDragActiveStep1(true);
+      return;
+    }
+    if (e.type === "dragleave") {
+      dragDepthStep1.current = Math.max(0, dragDepthStep1.current - 1);
+      if (dragDepthStep1.current === 0) setDragActiveStep1(false);
+      return;
+    }
+    if (e.type === "dragover") {
+      e.dataTransfer.dropEffect = "copy";
+      if (!dragActiveStep1) setDragActiveStep1(true);
+    }
+  };
+
+  const handleDropStep1 = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthStep1.current = 0;
+    setDragActiveStep1(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && !validateFileType(file)) return;
+    handleBillFileChange(file || null);
+  };
+
+  const handleDragStep2 = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+
+    if (e.type === "dragenter") {
+      dragDepthStep2.current += 1;
+      setDragActiveStep2(true);
+      return;
+    }
+    if (e.type === "dragleave") {
+      dragDepthStep2.current = Math.max(0, dragDepthStep2.current - 1);
+      if (dragDepthStep2.current === 0) setDragActiveStep2(false);
+      return;
+    }
+    if (e.type === "dragover") {
+      e.dataTransfer.dropEffect = "copy";
+      if (!dragActiveStep2) setDragActiveStep2(true);
+    }
+  };
+
+  const handleDropStep2 = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthStep2.current = 0;
+    setDragActiveStep2(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && !validateFileType(file)) return;
+    handlePolicyFileChange(file || null);
   };
 
   const step1Title = isBill ? "Upload Medical Bill" : "Upload Insurance Claim";
@@ -75,8 +337,8 @@ export default function SubmitPage() {
       ];
 
   const reviewItems = [
-    { label: isBill ? "Medical Bill" : "Insurance Claim", value: billFile?.name || "Not uploaded" },
-    { label: "Policy Document", value: policyFile?.name || "Not uploaded" },
+    { label: isBill ? "Medical Bill" : "Insurance Claim", value: billFileName || "Not uploaded" },
+    { label: "Policy Document", value: policyFileName || "Not uploaded" },
     { label: "Patient", value: patientName },
     { label: "Insurer", value: insurerName },
     { label: isBill ? "Procedure" : "Claim Issue", value: procedureOrIssue },
@@ -154,15 +416,23 @@ export default function SubmitPage() {
 
           {/* Step 1: Bill/Claim file */}
           {step === 1 && (
-            <label className={`flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-xl cursor-pointer transition-all duration-300 ${
-              billFile 
-                ? "border-[#4fc3a1] bg-gradient-to-br from-blue-50 to-emerald-50 shadow-md" 
-                : "border-slate-200 hover:border-blue-300 hover:bg-blue-50/30"
-            }`}>
-              <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => e.target.files && setBillFile(e.target.files[0])} />
-              {billFile ? (
-                <><FileText size={40} className="text-[#4f7df3] mb-3 drop-shadow-sm" /><p className="font-medium text-slate-900">{billFile.name}</p><p className="text-sm text-slate-500 mt-1">Click to change</p></>
-               ) : (
+            <label
+              className={`flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-xl cursor-pointer transition-all duration-300 ${
+                dragActiveStep1
+                  ? "scale-[1.01] border-blue-400 bg-gradient-to-br from-blue-100/80 to-emerald-100/80 shadow-lg shadow-blue-200/50"
+                  : billFile || billFileName
+                    ? "border-[#4fc3a1] bg-gradient-to-br from-blue-50 to-emerald-50 shadow-md"
+                    : "border-slate-200 hover:border-blue-300 hover:bg-blue-50/30"
+              }`}
+              onDragEnter={handleDragStep1}
+              onDragLeave={handleDragStep1}
+              onDragOver={handleDragStep1}
+              onDrop={handleDropStep1}
+            >
+              <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => handleBillFileChange(e.target.files?.[0] || null)} />
+              {billFile || billFileName ? (
+                <><FileText size={40} className="text-[#4f7df3] mb-3 drop-shadow-sm" /><p className="font-medium text-slate-900">{billFileName}</p><p className="text-sm text-slate-500 mt-1">Click or drop to change</p></>
+              ) : (
                 <><Upload size={40} className="text-slate-400 mb-3" /><p className="font-medium text-slate-700">{step1DropText}</p><p className="text-sm text-slate-500 mt-1">PDF, PNG, or JPG</p></>
               )}
             </label>
@@ -170,15 +440,23 @@ export default function SubmitPage() {
 
           {/* Step 2: Policy file */}
           {step === 2 && (
-            <label className={`flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-xl cursor-pointer transition-all duration-300 ${
-              policyFile 
-                ? "border-[#4fc3a1] bg-gradient-to-br from-blue-50 to-emerald-50 shadow-md" 
-                : "border-slate-200 hover:border-blue-300 hover:bg-blue-50/30"
-            }`}>
-              <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => e.target.files && setPolicyFile(e.target.files[0])} />
-              {policyFile ? (
-                <><FileText size={40} className="text-[#4f7df3] mb-3 drop-shadow-sm" /><p className="font-medium text-slate-900">{policyFile.name}</p><p className="text-sm text-slate-500 mt-1">Click to change</p></>
-               ) : (
+            <label
+              className={`flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-xl cursor-pointer transition-all duration-300 ${
+                dragActiveStep2
+                  ? "scale-[1.01] border-blue-400 bg-gradient-to-br from-blue-100/80 to-emerald-100/80 shadow-lg shadow-blue-200/50"
+                  : policyFile || policyFileName
+                    ? "border-[#4fc3a1] bg-gradient-to-br from-blue-50 to-emerald-50 shadow-md"
+                    : "border-slate-200 hover:border-blue-300 hover:bg-blue-50/30"
+              }`}
+              onDragEnter={handleDragStep2}
+              onDragLeave={handleDragStep2}
+              onDragOver={handleDragStep2}
+              onDrop={handleDropStep2}
+            >
+              <input type="file" className="hidden" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => handlePolicyFileChange(e.target.files?.[0] || null)} />
+              {policyFile || policyFileName ? (
+                <><FileText size={40} className="text-[#4f7df3] mb-3 drop-shadow-sm" /><p className="font-medium text-slate-900">{policyFileName}</p><p className="text-sm text-slate-500 mt-1">Click or drop to change</p></>
+              ) : (
                 <><Upload size={40} className="text-slate-400 mb-3" /><p className="font-medium text-slate-700">Drop policy document here</p><p className="text-sm text-slate-500 mt-1">PDF, PNG, or JPG</p></>
               )}
             </label>

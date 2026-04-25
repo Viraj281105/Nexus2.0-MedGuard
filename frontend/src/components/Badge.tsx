@@ -25,13 +25,9 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
     };
 
     return (
-      <span
-        ref={ref}
-        className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${className}`}
-        {...props}
-      />
+      <span ref={ref} className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${className}`} {...props} />
     );
   }
 );
 
-Badge.displayName = "Badge";
+Badge.displayName = "Badge";  

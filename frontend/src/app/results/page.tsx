@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import {
   AlertCircle,
@@ -17,6 +17,7 @@ import { Header } from "@/components/Header";
 import { Button } from "@/components/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/Card";
 import { Badge } from "@/components/Badge";
+import { addToast } from "@/lib/toast";
 
 const containerVariants = {
   animate: {
@@ -47,6 +48,49 @@ interface ResultData {
   analysisType: AnalysisType;
   findings: Finding[];
   savings: number;
+}
+
+function Skeleton({ className = "" }: { className?: string }) {
+  return (
+    <div className={`animate-pulse rounded-lg bg-slate-200/80 ${className}`} />
+  );
+}
+
+function AnimatedNumber({ value, duration = 1500 }: { value: number; duration?: number }) {
+  const [displayValue, setDisplayValue] = useState(0);
+  const startTimeRef = useRef<number | null>(null);
+  const frameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    startTimeRef.current = null;
+    
+    const animate = (timestamp: number) => {
+      if (!startTimeRef.current) {
+        startTimeRef.current = timestamp;
+      }
+      
+      const elapsed = timestamp - startTimeRef.current;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const current = Math.round(eased * value);
+      
+      setDisplayValue(current);
+      
+      if (progress < 1) {
+        frameRef.current = requestAnimationFrame(animate);
+      }
+    };
+    
+    frameRef.current = requestAnimationFrame(animate);
+    
+    return () => {
+      if (frameRef.current) {
+        cancelAnimationFrame(frameRef.current);
+      }
+    };
+  }, [value, duration]);
+
+  return <span>₹{displayValue.toLocaleString()}</span>;
 }
 
 export default function Results() {
@@ -98,6 +142,7 @@ export default function Results() {
       }
     } catch (err) {
       console.error(err);
+      addToast("Report generation failed. Using demo.", "warning");
       setTimeout(() => setReportReady(true), 2000);
     } finally {
       setIsGenerating(false);
@@ -105,14 +150,103 @@ export default function Results() {
   };
 
   if (!data)
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-transparent text-slate-900">
-        <div className="text-center space-y-4">
-          <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-blue-100 border-t-blue-500 shadow-md" />
-          <p className="text-slate-600">Analyzing your document...</p>
+  return (
+    <main className="min-h-screen bg-transparent text-slate-900">
+      <Header showNav={true} />
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div className="space-y-12">
+          {/* Skeleton Stats */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {[1, 2, 3].map((i) => (
+              <Card key={i} className="p-6 bg-white/70 backdrop-blur-sm border-slate-200/60 shadow-md">
+                <div className="flex items-start justify-between">
+                  <div className="space-y-3 flex-1">
+                    <Skeleton className="h-4 w-24" />
+                    <Skeleton className="h-8 w-32" />
+                  </div>
+                  <Skeleton className="h-12 w-12 rounded-xl" />
+                </div>
+              </Card>
+            ))}
+          </div>
+
+          {/* Skeleton Main Content */}
+          <div className="grid lg:grid-cols-3 gap-8">
+            <div className="lg:col-span-2 space-y-6">
+              <Card className="bg-white/70 backdrop-blur-sm border-slate-200/60 shadow-md">
+                <CardHeader>
+                  <Skeleton className="h-7 w-48" />
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {[1, 2].map((i) => (
+                    <div key={i} className="rounded-xl border border-slate-200 bg-white p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 space-y-2">
+                          <Skeleton className="h-5 w-40" />
+                          <div className="grid grid-cols-2 gap-4">
+                            <Skeleton className="h-14 w-full" />
+                            <Skeleton className="h-14 w-full" />
+                          </div>
+                        </div>
+                        <Skeleton className="h-14 w-24" />
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="space-y-6">
+              <Card className="border-blue-200/60 bg-gradient-to-br from-blue-50 to-emerald-50 shadow-md">
+                <CardContent className="pt-6 space-y-4">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-10 w-40" />
+                  <Skeleton className="h-12 w-full rounded-xl" />
+                </CardContent>
+              </Card>
+
+              <Card className="bg-white/70 backdrop-blur-sm border-slate-200/60 shadow-md">
+                <CardHeader>
+                  <Skeleton className="h-5 w-36" />
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {[1, 2, 3, 4].map((i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <Skeleton className="h-5 w-5 rounded-full" />
+                      <Skeleton className="h-4 w-28" />
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+
+          {/* Skeleton Next Steps */}
+          <Card className="bg-white/70 backdrop-blur-sm border-slate-200/60 shadow-md">
+            <CardHeader>
+              <Skeleton className="h-7 w-32" />
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="flex gap-3">
+                    <Skeleton className="h-6 w-6 rounded-full" />
+                    <Skeleton className="h-4 flex-1 max-w-md" />
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
-    );
+    </main>
+  );
+
+  const confidenceScore = Math.round(
+    (data.findings.reduce((sum, item) => sum + item.confidence, 0) /
+      data.findings.length) *
+      100
+  );
 
   const statsLabel = isBillAnalysis ? "Hospital Charged" : "Claimed Amount";
   const rateLabel = isBillAnalysis ? "Standard Rate" : "Eligible Amount";
@@ -122,7 +256,7 @@ export default function Results() {
   const findingsTitle = isBillAnalysis ? "Audit Findings" : "Claim Review Findings";
   const recoveryLabel = isBillAnalysis ? "Potential Recovery" : "Potential Reimbursement";
   const generateLabel = isBillAnalysis ? "Generate Appeal" : "Generate Dispute";
-  const generatingLabel = isBillAnalysis ? "Generating..." : "Generating...";
+  const generatingLabel = "Generating...";
   const readyLabel = isBillAnalysis ? "Appeal Ready" : "Report Ready";
   const shareLabel = isBillAnalysis ? "Share Appeal" : "Share Report";
   const processSteps = isBillAnalysis
@@ -169,23 +303,23 @@ export default function Results() {
             {[
               {
                 label: recoveryLabel,
-                value: `₹${data.savings.toLocaleString()}`,
+                value: data.savings,
+                isAnimated: true,
                 icon: TrendingDown,
                 color: "green",
               },
               {
                 label: "Issues Found",
-                value: data.findings.length.toString(),
+                value: data.findings.length,
+                isAnimated: false,
                 icon: AlertCircle,
                 color: "orange",
               },
               {
                 label: "Confidence Score",
-                value: `${Math.round(
-                  (data.findings.reduce((sum, item) => sum + item.confidence, 0) /
-                    data.findings.length) *
-                    100
-                )}%`,
+                value: confidenceScore,
+                isAnimated: false,
+                suffix: "%",
                 icon: CheckCircle2,
                 color: "blue",
               },
@@ -206,7 +340,11 @@ export default function Results() {
                           {stat.label}
                         </p>
                         <p className="text-3xl font-bold text-slate-900">
-                          {stat.value}
+                          {stat.isAnimated ? (
+                            <AnimatedNumber value={stat.value as number} />
+                          ) : (
+                            <>{stat.value}{stat.suffix || ""}</>
+                          )}
                         </p>
                       </div>
                       <div className={`flex h-12 w-12 items-center justify-center rounded-xl border border-slate-200 bg-white ${colorClass} shadow-sm`}>
@@ -255,13 +393,13 @@ export default function Results() {
                             <div>
                               <p className="text-slate-500">{statsLabel}</p>
                               <p className="text-lg font-semibold text-slate-900">
-                                ₹{item.charged.toLocaleString()}
+                                <AnimatedNumber value={item.charged} duration={800} />
                               </p>
                             </div>
                             <div>
                               <p className="text-slate-500">{rateLabel}</p>
                               <p className="text-lg font-semibold text-slate-900">
-                                ₹{item.expected_rate.toLocaleString()}
+                                <AnimatedNumber value={item.expected_rate} duration={800} />
                               </p>
                             </div>
                           </div>
@@ -269,7 +407,7 @@ export default function Results() {
                         <div className="text-right space-y-1">
                           <div className={`flex items-center justify-end gap-1 text-lg font-bold ${diffIconColor}`}>
                             <TrendingDown className="w-5 h-5" />
-                            ₹{item.difference.toLocaleString()}
+                            <AnimatedNumber value={item.difference} duration={1000} />
                           </div>
                           <p className={`text-xs font-medium ${diffColor}`}>{diffLabel}</p>
                         </div>
@@ -291,7 +429,7 @@ export default function Results() {
                         {recoveryLabel}
                       </p>
                       <p className="text-4xl font-bold text-transparent bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] bg-clip-text">
-                        ₹{data.savings.toLocaleString()}
+                        <AnimatedNumber value={data.savings} duration={2000} />
                       </p>
                     </div>
 
