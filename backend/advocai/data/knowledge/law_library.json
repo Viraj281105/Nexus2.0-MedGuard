@@ -1,0 +1,74 @@
+{
+  "statutes": [
+    {
+      "statute_name": "ACA \u00a72713 \u2014 Preventive Care Coverage",
+      "statute_text": "Requires non-grandfathered group health plans and health insurance issuers to provide coverage for preventive health services without cost-sharing, including evidence-based items or services with an A or B rating from the U.S. Preventive Services Task Force (USPSTF), recommended immunizations, and preventive care for infants, children, and adolescents.",
+      "jurisdiction": "federal",
+      "category": "preventive_care",
+      "source": "Affordable Care Act"
+    },
+    {
+      "statute_name": "ACA \u00a72719 \u2014 Internal and External Appeals",
+      "statute_text": "Requires group health plans and health insurance issuers to implement an effective internal appeals process for coverage determinations and claims, and to provide access to an independent external review process for adverse benefit determinations.",
+      "jurisdiction": "federal",
+      "category": "appeals",
+      "source": "Affordable Care Act"
+    },
+    {
+      "statute_name": "ERISA \u00a7502(a) \u2014 Civil Enforcement",
+      "statute_text": "Authorizes participants or beneficiaries to bring civil actions to recover benefits due under the terms of a plan, to enforce rights under the plan, or to clarify rights to future benefits under the plan. Also authorizes suits against plan fiduciaries who breach their duties.",
+      "jurisdiction": "federal",
+      "category": "claims_enforcement",
+      "source": "Employee Retirement Income Security Act"
+    },
+    {
+      "statute_name": "ERISA \u00a7503 \u2014 Claims Procedure",
+      "statute_text": "Requires every employee benefit plan to establish and maintain reasonable claims procedures, including notice of adverse benefit determinations and a full and fair review of denied claims. Insurers must provide specific reasons for denial and reference relevant plan provisions.",
+      "jurisdiction": "federal",
+      "category": "claims_procedure",
+      "source": "Employee Retirement Income Security Act"
+    },
+    {
+      "statute_name": "Mental Health Parity and Addiction Equity Act (MHPAEA)",
+      "statute_text": "Requires that financial requirements and treatment limitations for mental health and substance use disorder benefits be no more restrictive than the predominant financial requirements and treatment limitations applied to substantially all medical/surgical benefits in a classification. Prohibits discriminatory coverage limits for mental health conditions.",
+      "jurisdiction": "federal",
+      "category": "mental_health",
+      "source": "Mental Health Parity and Addiction Equity Act of 2008"
+    },
+    {
+      "statute_name": "ACA \u00a71557 \u2014 Non-Discrimination in Health Programs",
+      "statute_text": "Prohibits discrimination in health programs and activities receiving federal financial assistance on the basis of race, color, national origin, sex, age, or disability. Applies to health insurers participating in ACA marketplaces and providers receiving federal funds.",
+      "jurisdiction": "federal",
+      "category": "non_discrimination",
+      "source": "Affordable Care Act"
+    },
+    {
+      "statute_name": "ACA \u00a72711 \u2014 No Lifetime or Annual Limits",
+      "statute_text": "Prohibits group health plans and health insurance issuers from imposing lifetime dollar limits on essential health benefits. Annual dollar limits on essential health benefits for plan years beginning on or after January 1, 2014, are also prohibited.",
+      "jurisdiction": "federal",
+      "category": "benefit_limits",
+      "source": "Affordable Care Act"
+    },
+    {
+      "statute_name": "ACA \u00a72712 \u2014 Prohibition on Rescissions",
+      "statute_text": "Prohibits group health plans and health insurance issuers from rescinding coverage of an individual, except in the case of fraud or intentional misrepresentation of material fact. Requires at least 30 days advance notice before rescinding coverage.",
+      "jurisdiction": "federal",
+      "category": "coverage_stability",
+      "source": "Affordable Care Act"
+    },
+    {
+      "statute_name": "ERISA \u00a7701 \u2014 Portability and Nondiscrimination",
+      "statute_text": "Limits pre-existing condition exclusion periods to 12 months (18 months for late enrollees), requires crediting prior coverage, and prohibits discrimination based on health status factors including genetic information, disability, and prior claims.",
+      "jurisdiction": "federal",
+      "category": "portability",
+      "source": "Employee Retirement Income Security Act"
+    },
+    {
+      "statute_name": "ACA Essential Health Benefits \u2014 10 Categories",
+      "statute_text": "Health insurance plans sold in individual and small group markets must cover ten essential health benefit categories: ambulatory patient services, emergency services, hospitalization, maternity and newborn care, mental health and substance use disorder services, prescription drugs, rehabilitative and habilitative services and devices, laboratory services, preventive and wellness services, and pediatric services.",
+      "jurisdiction": "federal",
+      "category": "essential_benefits",
+      "source": "Affordable Care Act \u00a71302"
+    }
+  ]
+}

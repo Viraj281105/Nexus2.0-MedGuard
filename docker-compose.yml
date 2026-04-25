@@ -1,0 +1,80 @@
+# =============================================================================
+# MedGuard AI + AdvocAI — Docker Compose
+# =============================================================================
+# Usage:
+#   docker-compose up --build        (first time)
+#   docker-compose up                (subsequent runs)
+#   docker-compose down              (stop all)
+# =============================================================================
+
+services:
+  # ── PostgreSQL + pgvector ──────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: advocai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: advocai123
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/advocai/storage/postgres/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (FastAPI) ──────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # LLM
+      LLM_BACKEND: groq
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL: ${GROQ_MODEL:-llama3-70b-8192}
+
+      # Database
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: advocai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: advocai123
+      PERSISTENCE_BACKEND: postgres
+
+      # Auth
+      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
+
+      # PubMed
+      PUBMED_API_KEY: ${PUBMED_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_sessions:/app/sessions
+      - backend_data:/app/data
+
+  # ── Frontend (Next.js) ─────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  backend_sessions:
+  backend_data:

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { UploadCloud, Mic, ArrowRight, ShieldCheck, FileSearch, Scale } from "lucide-react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
@@ -65,13 +66,13 @@ export default function Home() {
           <h1 className="text-2xl font-bold tracking-tight">MedGuard <span className="text-[var(--color-primary)]">AI</span></h1>
         </div>
         <nav className="hidden md:flex gap-6 text-sm font-medium text-slate-300">
-          <a href="#" className="hover:text-white transition-colors">How it works</a>
-          <a href="#" className="hover:text-white transition-colors">CGHS Benchmarks</a>
-          <a href="#" className="hover:text-white transition-colors">Pricing</a>
+          <Link href="/submit" className="hover:text-white transition-colors">Submit Appeal</Link>
+          <Link href="/results" className="hover:text-white transition-colors">Bill Audit</Link>
+          <Link href="/login" className="hover:text-white transition-colors">Dashboard</Link>
         </nav>
-        <button className="px-5 py-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-sm font-medium border border-white/10 backdrop-blur-md">
+        <Link href="/login" className="px-5 py-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-sm font-medium border border-white/10 backdrop-blur-md">
           Login
-        </button>
+        </Link>
       </header>
 
       <main className="flex-1 w-full max-w-5xl flex flex-col items-center justify-center text-center mt-12 z-10">

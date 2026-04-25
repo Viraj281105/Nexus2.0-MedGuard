@@ -1,0 +1,171 @@
+# storage/session_manager.py — Hybrid Persistence Manager
+
+from typing import Optional, Dict, List
+import logging
+import os
+
+from advocai.config.settings import PERSISTENCE_BACKEND, STAGE_ORDER
+from advocai.storage.json.json_store import JSONStore
+
+logger = logging.getLogger("SessionManager")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POSTGRES LOADING
+# ─────────────────────────────────────────────────────────────────────────────
+
+POSTGRES_AVAILABLE = False
+BackendPG = None
+
+if PERSISTENCE_BACKEND == "postgres":
+    try:
+        from advocai.storage.postgres.repository import Repository as BackendPG
+        POSTGRES_AVAILABLE = True
+    except Exception as e:
+        logger.error(f"Postgres backend could not be loaded — falling back to JSON: {e}")
+        POSTGRES_AVAILABLE = False
+
+
+def _get_conn():
+    import psycopg2
+    import psycopg2.extras
+    return psycopg2.connect(
+        host=os.getenv("POSTGRES_HOST", "localhost"),
+        port=int(os.getenv("POSTGRES_PORT", 5432)),
+        dbname=os.getenv("POSTGRES_DB", "advocai"),
+        user=os.getenv("POSTGRES_USER", "postgres"),
+        password=os.getenv("POSTGRES_PASSWORD", ""),
+    )
+
+
+class SessionManager:
+    """Hybrid Session Manager: Prefers PostgreSQL, falls back to JSON store."""
+
+    @staticmethod
+    def _use_postgres() -> bool:
+        return PERSISTENCE_BACKEND == "postgres" and POSTGRES_AVAILABLE
+
+    @staticmethod
+    def start_new_session(metadata: dict = None) -> str:
+        if SessionManager._use_postgres():
+            try:
+                session_id = BackendPG.create_session(metadata)
+                BackendPG.set_resume_flag(session_id, True, last_safe_stage=None)
+                return session_id
+            except Exception as e:
+                logger.error(f"Postgres create_session() failed — switching to JSON: {e}")
+        import uuid
+        session_id = str(uuid.uuid4())
+        JSONStore.create_session(session_id, metadata or {})
+        return session_id
+
+    @staticmethod
+    def get_resume_stage(session_id: str) -> Optional[str]:
+        if SessionManager._use_postgres():
+            try:
+                state = BackendPG.get_resume_state(session_id)
+                if state and state["is_resumable"]:
+                    return state["last_safe_stage"]
+            except Exception as e:
+                logger.error(f"Postgres get_resume_stage() failed — fallback: {e}")
+        return JSONStore.get_last_completed_stage(session_id)
+
+    @staticmethod
+    def load_checkpoint(session_id: str, stage: str) -> Optional[Dict]:
+        if SessionManager._use_postgres():
+            try:
+                return BackendPG.get_agent_output(session_id, stage)
+            except Exception as e:
+                logger.error(f"Postgres load_checkpoint() failed — fallback: {e}")
+        return JSONStore.load_checkpoint(session_id, stage)
+
+    @staticmethod
+    def save_checkpoint(session_id: str, stage: str, output_json: dict, raw_text: str = None):
+        if SessionManager._use_postgres():
+            try:
+                BackendPG.save_agent_output(session_id, stage, output_json, raw_text)
+                BackendPG.update_session_stage(session_id, stage)
+                BackendPG.set_resume_flag(session_id, True, last_safe_stage=stage)
+                return
+            except Exception as e:
+                logger.error(f"Postgres save_checkpoint() failed — falling back to JSON: {e}")
+        JSONStore.save_checkpoint(session_id, stage, output_json, raw_text)
+
+    @staticmethod
+    def mark_failure(session_id: str, stage: str, error_message: str,
+                     error_type: str = None, traceback: str = None):
+        if SessionManager._use_postgres():
+            try:
+                BackendPG.log_error(session_id, stage, error_message, error_type, traceback)
+                BackendPG.set_resume_flag(session_id, False, last_safe_stage=stage)
+                return
+            except Exception as e:
+                logger.error(f"Postgres mark_failure() failed — fallback to JSON: {e}")
+        JSONStore.log_error(session_id, stage, error_message, error_type, traceback)
+
+    @staticmethod
+    def is_stage_completed(session_id: str, stage: str) -> bool:
+        if SessionManager._use_postgres():
+            try:
+                last_stage = BackendPG.get_last_completed_stage(session_id)
+                if not last_stage:
+                    return False
+                return STAGE_ORDER.index(last_stage) >= STAGE_ORDER.index(stage)
+            except Exception as e:
+                logger.error(f"Postgres is_stage_completed() failed — fallback: {e}")
+        return JSONStore.stage_completed(session_id, stage)
+
+    @staticmethod
+    def should_skip_stage(session_id: str, stage: str) -> bool:
+        if SessionManager._use_postgres():
+            try:
+                existing = BackendPG.get_agent_output(session_id, stage)
+                return existing is not None
+            except Exception as e:
+                logger.error(f"Postgres should_skip_stage() failed — fallback: {e}")
+        return JSONStore.stage_completed(session_id, stage)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# USER-SCOPED SESSION QUERIES
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_cases_for_user(user_id: str) -> List[dict]:
+    if not SessionManager._use_postgres():
+        return []
+    import psycopg2.extras
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, patient_name, denial_reason, status, agent_statuses AS agents,
+                       judge_score, appeal_strength, created_at, has_pdf
+                FROM sessions WHERE user_id = %s ORDER BY created_at DESC
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+    except Exception as e:
+        logger.error(f"get_cases_for_user() failed: {e}")
+        return []
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+async def delete_case_for_user(session_id: str, user_id: str) -> bool:
+    if not SessionManager._use_postgres():
+        return False
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
+            deleted = cur.rowcount
+        conn.commit()
+    except Exception as e:
+        logger.error(f"delete_case_for_user() failed: {e}")
+        return False
+    finally:
+        conn.close()
+    return deleted > 0
