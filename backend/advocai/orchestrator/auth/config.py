@@ -10,6 +10,18 @@ import os
 import secrets
 
 # ==============================================================================
+# DEMO MODE CONFIGURATION
+# ==============================================================================
+
+# Enable Demo Mode (Bypass Authentication)
+# -----------------------------------------
+# When set to true, all endpoints bypass JWT authentication.
+# Useful for demonstrations, testing, and local development.
+# 
+# WARNING: NEVER enable in production!
+DEMO_MODE: bool = os.getenv("DEMO_MODE", "false").lower() == "true"
+
+# ==============================================================================
 # JWT CONFIGURATION
 # ==============================================================================
 
@@ -42,3 +54,12 @@ JWT_ALGORITHM: str = "HS256"
 # - 480 : 8 hours (workday session)
 # - 1440: 24 hours (default, convenient for users)
 ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+
+# ==============================================================================
+# DEMO USER (for DEMO_MODE)
+# ==============================================================================
+
+# Mock user record used when DEMO_MODE is enabled.
+# Allows testing without database or JWT authentication.
+DEMO_USER_ID: int = 999
+DEMO_USER_EMAIL: str = "demo@advocai.local"

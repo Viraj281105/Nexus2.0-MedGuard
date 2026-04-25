@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 # Authentication module
 from advocai.orchestrator.auth import router as auth_router, ensure_users_table
+from advocai.orchestrator.auth.config import DEMO_MODE
 from pydantic import BaseModel
 from advocai.orchestrator.auth.router import get_current_user
 from advocai.orchestrator.auth.db import UserRecord, create_case, get_user_cases, get_case_by_id, delete_case, update_case_status
@@ -58,6 +59,15 @@ async def startup():
     Initialize application on startup.
     Ensures users table exists in PostgreSQL (if available).
     """
+    logger.info("=" * 60)
+    if DEMO_MODE:
+        logger.warning("⚠️  DEMO MODE ENABLED - Authentication Bypassed!")
+        logger.warning("    All endpoints accessible without JWT token")
+        logger.warning("    Demo user: demo@advocai.local (ID: 999)")
+    else:
+        logger.info("Authentication required - Production mode")
+    logger.info("=" * 60)
+    
     try:
         ensure_users_table()
     except Exception as error:
