@@ -1,12 +1,14 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"] });
+const plusJakarta = Plus_Jakarta_Sans({ subsets: ["latin"], weight: ["400", "500", "600", "700", "800"] });
 
 export const metadata: Metadata = {
-  title: "MedGuard AI",
-  description: "AI-Powered Medical Billing Auditor & Insurance Appeal Engine",
+  title: "MedGuard AI - Medical Billing Auditor",
+  description: "AI-Powered Medical Billing Auditor & Insurance Appeal Engine. Identify overcharges and maximize your insurance claims.",
+  keywords: "medical billing, insurance appeals, healthcare auditor, CGHS, billing audit",
+  viewport: "width=device-width, initial-scale=1.0",
 };
 
 export default function RootLayout({
@@ -15,8 +17,25 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={inter.className}>{children}</body>
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              try {
+                if (localStorage.getItem('color-scheme') === 'dark' ||
+                    (!('color-scheme' in localStorage) &&
+                     window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                  document.documentElement.classList.add('dark');
+                }
+              } catch (e) {}
+            `,
+          }}
+        />
+      </head>
+      <body className={`${plusJakarta.className} antialiased`}>
+        {children}
+      </body>
     </html>
   );
 }

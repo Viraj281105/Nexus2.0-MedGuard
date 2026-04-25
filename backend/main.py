@@ -23,6 +23,8 @@ from fastapi.staticfiles import StaticFiles
 # ── MedGuard services (bill auditing) ────────────────────────────────
 from services.ocr_parser import parse_bill
 from services.anomaly_detector import detect_anomalies
+from services.speech_parser import parse_audio
+from services.pdf_generator import create_appeal_pdf
 from agents.orchestrator import AgentOrchestrator
 
 # ── AdvocAI sub-application ──────────────────────────────────────────
@@ -138,6 +140,19 @@ async def upload_bill(file: UploadFile = File(...)):
         logger.error(f"Upload processing failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/upload-audio")
+async def upload_audio(file: UploadFile = File(...)):
+    """Upload a voice input (Hinglish) for speech-to-text parsing via Whisper."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No audio file provided")
+        
+    file_bytes = await file.read()
+    try:
+        transcription = parse_audio(file_bytes, file.filename)
+        return {"filename": file.filename, "transcription": transcription}
+    except Exception as e:
+        logger.error(f"Audio processing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/generate-appeal")
 async def generate_appeal():
@@ -148,14 +163,18 @@ async def generate_appeal():
 
     try:
         orchestrator = AgentOrchestrator()
-        appeal = orchestrator.generate_appeal(data)
+        appeal = await orchestrator.generate_appeal(data)
 
-        appeal_path = Path("outputs") / "appeal_letter.txt"
-        appeal_path.write_text(appeal, encoding="utf-8")
+        # Generate PDF document instead of txt
+        appeal_filename = "appeal_letter.pdf"
+        appeal_path = Path("outputs") / appeal_filename
+        
+        actual_path = create_appeal_pdf(appeal, str(appeal_path))
+        actual_filename = os.path.basename(actual_path)
 
         return {
             "appeal_text": appeal,
-            "download_url": "/api/download-appeal/appeal_letter.txt",
+            "download_url": f"/api/download-appeal/{actual_filename}",
         }
 
     except Exception as e:
@@ -168,4 +187,6 @@ async def download_appeal(filename: str):
     file_path = Path("outputs") / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path=str(file_path), media_type="text/plain", filename=filename)
+        
+    media_type = "application/pdf" if filename.endswith(".pdf") else "text/plain"
+    return FileResponse(path=str(file_path), media_type=media_type, filename=filename)

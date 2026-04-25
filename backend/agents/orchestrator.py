@@ -36,7 +36,7 @@ class AgentOrchestrator:
         except Exception as e:
             return f"[LLM Error: {e}]"
 
-    async def run_pipeline(self, overcharge_data: dict) -> str:
+    async def generate_appeal(self, overcharge_data: dict) -> str:
         """
         Runs the agents sequentially and generates the final appeal text.
         """

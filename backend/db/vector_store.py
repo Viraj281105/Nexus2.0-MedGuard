@@ -1,9 +1,11 @@
 import numpy as np
+import faiss
 from sentence_transformers import SentenceTransformer
 
-class MockVectorStore:
+class VectorStore:
     """
-    Local Vector Store for IRDAI Regulations using Sentence Transformers.
+    Local Vector Store for IRDAI Regulations using Sentence Transformers and FAISS.
+    (Aligned with System Architecture Diagram)
     """
     def __init__(self):
         # Load small, fast local embedding model
@@ -17,16 +19,31 @@ class MockVectorStore:
             "Any denial of a claim must be accompanied by a detailed justification quoting the specific clause of the policy document."
         ]
         
-        # Pre-compute embeddings for local RAG
-        self.embeddings = self.model.encode(self.documents)
+        # Pre-compute embeddings
+        embeddings = self.model.encode(self.documents)
+        
+        # Initialize FAISS Index
+        # all-MiniLM-L6-v2 outputs 384-dimensional vectors
+        self.dimension = embeddings.shape[1]
+        self.index = faiss.IndexFlatL2(self.dimension)
+        
+        # Add vectors to FAISS index
+        self.index.add(np.array(embeddings).astype('float32'))
         
     def search(self, query: str, top_k: int = 1) -> list:
         # Generate embedding for the query
-        query_embedding = self.model.encode([query])[0]
+        query_embedding = self.model.encode([query])
         
-        # Calculate cosine similarity
-        similarities = np.dot(self.embeddings, query_embedding) / (np.linalg.norm(self.embeddings, axis=1) * np.linalg.norm(query_embedding))
+        # Search FAISS index
+        distances, indices = self.index.search(np.array(query_embedding).astype('float32'), top_k)
         
-        # Get top-k results
-        top_indices = np.argsort(similarities)[::-1][:top_k]
-        return [self.documents[i] for i in top_indices]
+        # Retrieve documents
+        results = []
+        for idx in indices[0]:
+            if 0 <= idx < len(self.documents):
+                results.append(self.documents[idx])
+                
+        return results
+
+# Keep MockVectorStore class definition mapping to VectorStore for backwards compatibility
+MockVectorStore = VectorStore

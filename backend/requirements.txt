@@ -18,6 +18,9 @@ reportlab>=4.0.0
 # AI / ML
 sentence-transformers>=3.0.0
 torch
+openai-whisper>=20231117
+faiss-cpu>=1.7.4
+transformers>=4.30.0
 
 # Database
 psycopg2-binary>=2.9.0
