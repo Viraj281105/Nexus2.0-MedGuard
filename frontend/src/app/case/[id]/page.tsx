@@ -29,7 +29,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/Card";
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Ordered list of agent identifiers that form the processing pipeline. */
+/**
+ * Ordered list of agent identifiers that form the processing pipeline.
+ * Each agent executes sequentially and streams its progress to the frontend
+ * via Server-Sent Events (SSE).
+ */
 const AGENTS = [
   "auditor",
   "clinician",
@@ -38,12 +42,24 @@ const AGENTS = [
   "judge",
 ] as const;
 
+/** Union type representing a single agent from the pipeline. */
 type AgentName = (typeof AGENTS)[number];
 
-/** Possible lifecycle states for a single agent. */
+/**
+ * Possible lifecycle states for a single agent during pipeline execution.
+ *
+ * - `pending`  — Not yet started
+ * - `running`  — Currently executing
+ * - `done`     — Completed successfully
+ * - `error`    — Terminated with an error
+ */
 type AgentState = "pending" | "running" | "done" | "error";
 
-/** Human-readable metadata displayed in the pipeline sidebar. */
+/**
+ * Human-readable metadata displayed in the pipeline sidebar for each agent.
+ * Each entry maps an agent identifier to its icon, display label, and a
+ * description shown while the agent is actively running.
+ */
 const AGENT_META: Record<
   AgentName,
   { icon: React.ReactNode; label: string; desc: string }
@@ -75,27 +91,33 @@ const AGENT_META: Record<
   },
 };
 
-/** Thresholds used to colour the final quality score. */
+/**
+ * Thresholds used to colour the final quality score badge.
+ *
+ * - >= 80  → Green  (strong appeal)
+ * - >= 50  → Blue   (adequate appeal)
+ * - < 50   → Amber  (needs improvement)
+ */
 const SCORE_THRESHOLD_HIGH = 80;
 const SCORE_THRESHOLD_MEDIUM = 50;
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Pure helper functions (defined outside component to avoid re-creation)
 // ---------------------------------------------------------------------------
 
 /**
- * Create a record of initial agent states (all "pending").
+ * Create a record of initial agent states where every agent starts as "pending".
  * Extracted so the intent is explicit at the call-site.
  */
 const initialAgentStates = (): Record<AgentName, AgentState> =>
-  Object.fromEntries(AGENTS.map((a) => [a, "pending"])) as Record<
+  Object.fromEntries(AGENTS.map((agent) => [agent, "pending"])) as Record<
     AgentName,
     AgentState
   >;
 
 /**
- * Map an agent lifecycle state to a matching icon component.
- * Pure function – safe to call inside render.
+ * Map an agent lifecycle state to its corresponding status icon.
+ * Pure function — safe to call directly inside JSX without memoisation.
  */
 const statusIcon = (state: AgentState): React.ReactNode => {
   switch (state) {
@@ -108,12 +130,13 @@ const statusIcon = (state: AgentState): React.ReactNode => {
     case "error":
       return <AlertCircle className="h-5 w-5 text-red-500" />;
     default:
+      // "pending" or any unrecognised state — empty circle placeholder
       return <div className="h-5 w-5 rounded-full border-2 border-slate-300" />;
   }
 };
 
 /**
- * Derive a Tailwind text colour class based on the numeric score.
+ * Derive a Tailwind CSS text colour class based on the numeric quality score.
  */
 const scoreColourClass = (score: number): string => {
   if (score >= SCORE_THRESHOLD_HIGH) return "text-emerald-600";
@@ -121,55 +144,100 @@ const scoreColourClass = (score: number): string => {
   return "text-amber-600";
 };
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// CasePage Component
+// ===========================================================================
 
 export default function CasePage() {
-  // ---- Routing ------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Routing
+  // -------------------------------------------------------------------------
+
   const params = useParams();
   const sessionId = params.id as string;
 
-  // ---- State --------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // State
+  // -------------------------------------------------------------------------
+
+  /** Tracks the current lifecycle state of each agent in the pipeline. */
   const [agentStates, setAgentStates] = useState<Record<AgentName, AgentState>>(
     initialAgentStates
   );
+
+  /**
+   * Accumulates text chunks streamed from the Barrister agent.
+   * Each chunk is appended as it arrives; the array is joined for display.
+   */
   const [streamChunks, setStreamChunks] = useState<string[]>([]);
+
+  /** Becomes `true` once the SSE stream signals pipeline completion. */
   const [pipelineDone, setPipelineDone] = useState(false);
+
+  /** Holds a human-readable error message if any agent fails. */
   const [error, setError] = useState("");
+
+  /** Final quality score assigned by the Judge agent (0–100). */
   const [judgeScore, setJudgeScore] = useState<number | null>(null);
 
-  // ---- Refs ---------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Refs
+  // -------------------------------------------------------------------------
+
+  /** Reference to the active SSE connection so we can close it on unmount. */
   const streamRef = useRef<EventSource | null>(null);
+
+  /** Reference to the scrollable letter container for auto-scrolling. */
   const letterRef = useRef<HTMLDivElement>(null);
 
-  // ---- Derived values -----------------------------------------------------
-  const isProcessing = Object.values(agentStates).some(
-    (s) => s === "running"
+  // -------------------------------------------------------------------------
+  // Derived values (memoised to avoid unnecessary re-renders)
+  // -------------------------------------------------------------------------
+
+  /** `true` while at least one agent is still in the "running" state. */
+  const isProcessing = useMemo(
+    () => Object.values(agentStates).some((state) => state === "running"),
+    [agentStates]
   );
 
+  /** The complete appeal letter assembled from all streamed chunks. */
   const formattedLetter = useMemo(
     () => streamChunks.join(""),
     [streamChunks]
   );
 
+  /** CSS class string for colouring the score display. */
   const scoreColour = useMemo(
     () => (judgeScore !== null ? scoreColourClass(judgeScore) : ""),
     [judgeScore]
   );
 
-  // ---- SSE message handler (stable ref via useCallback) -------------------
+  // -------------------------------------------------------------------------
+  // SSE message handler (stable reference via useCallback)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Central handler for all incoming Server-Sent Events.
+   *
+   * Dispatches based on `data.type` to update agent states, accumulate
+   * streamed letter chunks, handle errors, or finalise the pipeline.
+   *
+   * Wrapped in `useCallback` with an empty dependency array so the function
+   * identity never changes, preventing unnecessary SSE re-connections.
+   */
   const handleSseMessage = useCallback((event: MessageEvent) => {
     try {
       const data = JSON.parse(event.data);
 
       switch (data.type) {
+        // ---- Agent lifecycle events --------------------------------------
         case "agent_start":
           setAgentStates((prev) => ({ ...prev, [data.agent]: "running" }));
           break;
 
         case "agent_done":
           setAgentStates((prev) => ({ ...prev, [data.agent]: "done" }));
+          // Capture the Judge's quality score when it finishes.
           if (data.agent === "judge" && data.output?.score !== undefined) {
             setJudgeScore(data.output.score);
           }
@@ -180,10 +248,14 @@ export default function CasePage() {
           setError(`${data.agent}: ${data.message}`);
           break;
 
+        // ---- Streaming content from the Barrister agent ------------------
         case "agent_stream":
           if (data.agent === "barrister") {
             setStreamChunks((prev) => [...prev, data.chunk]);
-            // Auto-scroll the letter container to the latest chunk.
+
+            // Auto-scroll the letter container to show the latest content.
+            // `requestAnimationFrame` ensures the DOM has painted the new
+            // chunk before we try to scroll.
             requestAnimationFrame(() => {
               letterRef.current?.scrollTo({
                 top: letterRef.current.scrollHeight,
@@ -193,60 +265,80 @@ export default function CasePage() {
           }
           break;
 
+        // ---- Pipeline completion events ----------------------------------
         case "pipeline_done":
         case "close":
           setPipelineDone(true);
           streamRef.current?.close();
           break;
 
+        // ---- Global error (not tied to a specific agent) -----------------
         case "error":
           setError(data.message);
           streamRef.current?.close();
           break;
 
         default:
-          break; // ignore unrecognised event types
+          // Silently ignore any unrecognised event types.
+          break;
       }
     } catch {
-      // Gracefully ignore malformed JSON events.
+      // Gracefully ignore malformed JSON events from the SSE stream.
+      // These are typically incomplete chunks that can be safely discarded.
     }
   }, []);
 
-  // ---- SSE lifecycle ------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // SSE lifecycle — connect on mount, disconnect on unmount
+  // -------------------------------------------------------------------------
+
   useEffect(() => {
+    // Establish a persistent SSE connection to the backend pipeline.
     const eventSource = new EventSource(
       apiUrl(`/api/case/${sessionId}/stream`)
     );
     streamRef.current = eventSource;
 
+    // Attach the stable message handler.
     eventSource.onmessage = handleSseMessage;
 
     /**
-     * On connection error, close the stream and fall back to a polling
-     * status check in case the pipeline already finished silently.
+     * Fallback error handler for connection-level failures.
+     *
+     * When the SSE connection drops unexpectedly, we close it and poll the
+     * status endpoint once after a short delay. This handles edge cases where
+     * the pipeline finished but the final "close" event was lost in transit.
      */
     eventSource.onerror = () => {
       eventSource.close();
+
       setTimeout(async () => {
         try {
           const res = await fetch(apiUrl(`/api/case/${sessionId}/status`));
           if (res.ok) {
             const body = await res.json();
-            if (body.status === "done") setPipelineDone(true);
+            if (body.status === "done") {
+              setPipelineDone(true);
+            }
           }
         } catch {
-          // Silently ignore the fallback poll error.
+          // Silently ignore the fallback poll error — the UI already shows
+          // whatever state we had before the connection dropped.
         }
       }, 1_000);
     };
 
-    // Cleanup on unmount or sessionId change.
+    // Cleanup: close the SSE connection when the component unmounts or
+    // the sessionId changes (which triggers a re-run of this effect).
     return () => {
       eventSource.close();
     };
   }, [sessionId, handleSseMessage]);
 
-  // ---- Render -------------------------------------------------------------
+  // =========================================================================
+  // Render
+  // =========================================================================
+
   return (
     <main className="min-h-screen bg-transparent text-slate-900">
       <Header showNav={false} />
@@ -257,9 +349,9 @@ export default function CasePage() {
           animate={{ opacity: 1, y: 0 }}
           className="space-y-8"
         >
-          {/* =========================================================== */}
-          {/* Top bar: back link & session ID                             */}
-          {/* =========================================================== */}
+          {/* =============================================================== */}
+          {/* Top bar — back navigation & session identifier                  */}
+          {/* =============================================================== */}
           <div className="flex items-center justify-between">
             <Link
               href="/"
@@ -268,6 +360,7 @@ export default function CasePage() {
               <ArrowLeft className="h-4 w-4" />
               Back
             </Link>
+
             <div className="text-right">
               <p className="text-sm text-slate-500">Case ID</p>
               <p className="font-mono font-semibold text-slate-900">
@@ -276,17 +369,20 @@ export default function CasePage() {
             </div>
           </div>
 
-          {/* =========================================================== */}
-          {/* Two-column layout: pipeline sidebar / report viewer         */}
-          {/* =========================================================== */}
+          {/* =============================================================== */}
+          {/* Main two-column layout                                          */}
+          {/* Left: Pipeline sidebar  |  Right: Live report viewer            */}
+          {/* =============================================================== */}
           <div className="grid gap-8 lg:grid-cols-3">
-            {/* ----- Left sidebar ----- */}
+            {/* ------------------------------------------------------------- */}
+            {/* LEFT SIDEBAR — Agent pipeline + Score + Errors                */}
+            {/* ------------------------------------------------------------- */}
             <motion.div
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               className="space-y-6"
             >
-              {/* Agent pipeline card */}
+              {/* ---- Agent pipeline card --------------------------------- */}
               <Card className="border-slate-200/60 bg-white/70 shadow-md backdrop-blur-sm">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
@@ -294,6 +390,7 @@ export default function CasePage() {
                     Processing Pipeline
                   </CardTitle>
                 </CardHeader>
+
                 <CardContent className="space-y-4">
                   {AGENTS.map((agent, idx) => {
                     const meta = AGENT_META[agent];
@@ -308,10 +405,12 @@ export default function CasePage() {
                         transition={{ delay: idx * 0.05 }}
                       >
                         <div className="space-y-2">
+                          {/* Agent row: status icon + label + description */}
                           <div className="flex items-start gap-3">
                             <div className="mt-0.5">
                               {statusIcon(state)}
                             </div>
+
                             <div className="min-w-0 flex-1">
                               <p
                                 className={`text-sm font-medium ${
@@ -322,6 +421,7 @@ export default function CasePage() {
                               >
                                 {meta.label}
                               </p>
+
                               <p className="mt-0.5 text-xs text-slate-500">
                                 {state === "running"
                                   ? meta.desc
@@ -333,7 +433,8 @@ export default function CasePage() {
                               </p>
                             </div>
                           </div>
-                          {/* Connector line between pipeline steps */}
+
+                          {/* Vertical connector line between pipeline steps */}
                           {!isLast && (
                             <div className="ml-2.5 h-2 w-0.5 bg-slate-200" />
                           )}
@@ -344,7 +445,7 @@ export default function CasePage() {
                 </CardContent>
               </Card>
 
-              {/* Quality score card (only shown when available) */}
+              {/* ---- Quality score card (conditional) --------------------- */}
               {judgeScore !== null && (
                 <motion.div
                   initial={{ opacity: 0, scale: 0.9 }}
@@ -355,9 +456,12 @@ export default function CasePage() {
                       <p className="text-sm font-medium text-slate-500">
                         Analysis Quality Score
                       </p>
+
                       <p className={`text-4xl font-bold ${scoreColour}`}>
                         {judgeScore}/100
                       </p>
+
+                      {/* Progress bar visualisation of the score */}
                       <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
                         <div
                           className="h-full rounded-full bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271]"
@@ -369,7 +473,7 @@ export default function CasePage() {
                 </motion.div>
               )}
 
-              {/* Error card (only shown when an error exists) */}
+              {/* ---- Error card (conditional) ----------------------------- */}
               {error && (
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
@@ -387,7 +491,9 @@ export default function CasePage() {
               )}
             </motion.div>
 
-            {/* ----- Main report viewer ----- */}
+            {/* ------------------------------------------------------------- */}
+            {/* RIGHT PANEL — Live analysis report viewer                    */}
+            {/* ------------------------------------------------------------- */}
             <motion.div
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
@@ -396,6 +502,8 @@ export default function CasePage() {
               <Card className="h-full border-slate-200/60 bg-white/70 shadow-md backdrop-blur-sm">
                 <CardHeader className="flex flex-row items-center justify-between">
                   <CardTitle>Analysis Report</CardTitle>
+
+                  {/* Download button — only visible after pipeline completes */}
                   {pipelineDone && (
                     <a
                       href={apiUrl(`/api/case/${sessionId}/download`)}
@@ -413,14 +521,18 @@ export default function CasePage() {
                     </a>
                   )}
                 </CardHeader>
+
                 <CardContent>
+                  {/* Scrollable letter output area */}
                   <div
                     ref={letterRef}
                     className="h-[500px] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 font-mono text-sm leading-relaxed whitespace-pre-wrap text-slate-700 shadow-inner"
                   >
                     {formattedLetter.length > 0 ? (
+                      /* Streamed content is available — render it */
                       <>{formattedLetter}</>
                     ) : (
+                      /* Fallback: show contextual placeholder message */
                       <div className="flex h-full items-center justify-center text-slate-500">
                         {isProcessing ? (
                           <>
@@ -440,9 +552,9 @@ export default function CasePage() {
             </motion.div>
           </div>
 
-          {/* =========================================================== */}
-          {/* Bottom action buttons (visible only after pipeline done)    */}
-          {/* =========================================================== */}
+          {/* =============================================================== */}
+          {/* Bottom action bar — visible only after pipeline completion     */}
+          {/* =============================================================== */}
           {pipelineDone && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -458,6 +570,7 @@ export default function CasePage() {
                   Back to Home
                 </Button>
               </Link>
+
               <Link href="/submit" className="inline-block">
                 <Button
                   icon={<Plus className="h-4 w-4" />}
