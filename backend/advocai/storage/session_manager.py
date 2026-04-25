@@ -4,8 +4,8 @@ from typing import Optional, Dict, List
 import logging
 import os
 
-from advocai.config.settings import PERSISTENCE_BACKEND, STAGE_ORDER
-from advocai.storage.json.json_store import JSONStore
+from ..config.settings import PERSISTENCE_BACKEND, STAGE_ORDER
+from .json.json_store import JSONStore
 
 logger = logging.getLogger("SessionManager")
 

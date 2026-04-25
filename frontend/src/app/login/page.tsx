@@ -84,9 +84,9 @@ export default function LoginPage() {
       const data = await res.json();
 
       // Persist the token and user information (e.g. in localStorage) and
-      // redirect the user to their dashboard.
+      // redirect the user to the case submission page.
       setAuth(data.access_token, data.user);
-      router.push("/dashboard");
+      router.push("/submit");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

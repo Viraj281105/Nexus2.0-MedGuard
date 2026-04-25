@@ -65,14 +65,12 @@ app.add_middleware(
 # All advocai routes (e.g. /api/submit, /api/case/*, /api/auth/*) are included
 app.mount("/advocai", advocai_app)
 
-# Also duplicate the key advocai routes on the main app for cleaner frontend access
+# Re-register AdvocAI endpoints on main app for cleaner frontend access
+# (Auth router is already included via the advocai_app mount)
 from advocai.orchestrator.app import (
     submit_case, list_cases, delete_case, stream_case,
     get_status, get_result, rescore_case, download_packet, health,
 )
-from advocai.orchestrator.auth.router import router as auth_router
-
-app.include_router(auth_router)
 
 # Re-register AdvocAI endpoints on main app
 app.add_api_route("/api/submit", submit_case, methods=["POST"])

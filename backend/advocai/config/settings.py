@@ -36,12 +36,15 @@ PERSISTENCE_BACKEND = os.getenv("PERSISTENCE_BACKEND", "json").lower()
 PostgreSQL connection parameters.
 
 Only used when PERSISTENCE_BACKEND = "postgres"
+
+NOTE: Uses POSTGRES_* env vars for consistency across all modules.
+These match the variable names used in docker-compose.yml and connection.py
 """
-DB_HOST = os.getenv("DB_HOST", "localhost")           # Database server hostname
-DB_PORT = os.getenv("DB_PORT", "5432")                # PostgreSQL default port
-DB_NAME = os.getenv("DB_NAME", "advocai")             # Database name
-DB_USER = os.getenv("DB_USER", "postgres")            # Database username
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")            # Database password (empty for local dev)
+DB_HOST = os.getenv("POSTGRES_HOST", "localhost")           # Database server hostname
+DB_PORT = os.getenv("POSTGRES_PORT", "5432")                # PostgreSQL default port
+DB_NAME = os.getenv("POSTGRES_DB", "advocai")               # Database name
+DB_USER = os.getenv("POSTGRES_USER", "postgres")            # Database username
+DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")            # Database password (empty for local dev)
 DB_ENABLE_POOL = os.getenv("DB_ENABLE_POOL", "true").lower() == "true"  # Enable connection pooling
 
 

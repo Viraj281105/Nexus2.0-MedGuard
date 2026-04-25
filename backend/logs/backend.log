@@ -1,0 +1,7 @@
+2026-04-26 01:06:15,523 - AdvocAI.App - INFO - ============================================================
+2026-04-26 01:06:15,523 - AdvocAI.App - INFO - Authentication required - Production mode
+2026-04-26 01:06:15,523 - AdvocAI.App - INFO - ============================================================
+2026-04-26 01:06:15,621 - AdvocAI.App - WARNING - Could not ensure users table (DB may not be available): connection to server at "localhost" (::1), port 5432 failed: FATAL:  password authentication failed for user "postgres"
+
+2026-04-26 01:06:59,240 - AdvocAI.App - ERROR - Error creating case: connection to server at "localhost" (::1), port 5432 failed: FATAL:  password authentication failed for user "postgres"
+

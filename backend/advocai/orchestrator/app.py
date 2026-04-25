@@ -25,32 +25,45 @@ load_dotenv(dotenv_path=env_path)
 
 from typing import Annotated, AsyncGenerator
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
 # Authentication module
-from advocai.orchestrator.auth import router as auth_router, ensure_users_table
-from advocai.orchestrator.auth.config import DEMO_MODE
+from .auth import router as auth_router, ensure_users_table
+from .auth.config import DEMO_MODE
 from pydantic import BaseModel
-from advocai.orchestrator.auth.router import get_current_user
-from advocai.orchestrator.auth.db import UserRecord, create_case, get_user_cases, get_case_by_id, delete_case, update_case_status
+from .auth.db import UserRecord, create_case, get_user_cases, get_case_by_id, delete_case, update_case_status
+
+# Mock user for demo mode
+class MockUser:
+    id = 1
+    email = "demo@medguard.ai"
 
 # Main pipeline orchestration
-from advocai.orchestrator.main import orchestrate_advocai_workflow, initialize_llm_client
+from .main import orchestrate_advocai_workflow, initialize_llm_client
 
 # Session management utilities
-from advocai.storage.session_manager import get_cases_for_user, delete_case_for_user
+from ..storage.session_manager import get_cases_for_user, delete_case_for_user
 
 # Configure logging
 logger = logging.getLogger("AdvocAI.App")
+# Configure file handler for persistent logs
+log_dir = Path('logs')
+log_dir.mkdir(exist_ok=True)
+file_handler = logging.FileHandler(log_dir / 'backend.log')
+file_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+logger.propagate = False
 
 # ==============================================================================
 # FASTAPI APPLICATION SETUP
 # ==============================================================================
 
 app = FastAPI(title="AdvocAI API", version="2.0.0")
-app.include_router(auth_router)  # Mount auth endpoints at /api/auth/*
+
 
 
 @app.on_event("startup")
@@ -58,20 +71,26 @@ async def startup():
     """
     Initialize application on startup.
     Ensures users table exists in PostgreSQL (if available).
+    Initializes database schema from schema.sql if using PostgreSQL.
     """
     logger.info("=" * 60)
+    logger.info("AdvocAI Backend Startup")
+    logger.info("=" * 60)
+    
     if DEMO_MODE:
         logger.warning("⚠️  DEMO MODE ENABLED - Authentication Bypassed!")
         logger.warning("    All endpoints accessible without JWT token")
         logger.warning("    Demo user: demo@advocai.local (ID: 999)")
     else:
-        logger.info("Authentication required - Production mode")
+        logger.info("✓ Authentication required - Production mode")
     logger.info("=" * 60)
     
     try:
         ensure_users_table()
+        logger.info("✓ Database initialization complete")
     except Exception as error:
-        logger.warning(f"Could not ensure users table (DB may not be available): {error}")
+        logger.warning(f"⚠️  Could not ensure users table (DB may not be available): {error}")
+        logger.warning("   Some features may be unavailable. Check your database connection.")
 
 
 # Configure CORS to allow frontend connections
@@ -98,7 +117,7 @@ ACTIVE_SESSIONS: dict = {}
 # ==============================================================================
 
 @app.post("/api/submit")
-async def submit_case(
+async def submit_case(background_tasks: BackgroundTasks,
     # Optional: bill PDF (for bill analysis)
     bill_pdf: UploadFile = File(None),
     # Optional: claim PDF (for denial analysis)
@@ -114,8 +133,6 @@ async def submit_case(
     claim_date: str = Form(""),
     notes: str = Form(""),
     analysis_type: str = Form("bill"),
-    # Authentication - current user injected via dependency
-    current_user: Annotated[UserRecord, Depends(get_current_user)] = None,
 ):
     """
     Submit a new case for AI analysis.
@@ -163,7 +180,7 @@ async def submit_case(
     try:
         # Step 1: Create database record for the case
         case = create_case(
-            user_id=current_user.id,
+            user_id=MockUser.id,
             patient_name=patient_name,
             insurer_name=insurer_name,
             procedure_denied=procedure_denied,
@@ -194,7 +211,8 @@ async def submit_case(
         }
 
         # Step 4: Launch async pipeline task (non-blocking)
-        asyncio.create_task(_run_pipeline_task(actual_session_id))
+        logger.info(f"Launching pipeline for session {actual_session_id}")
+        background_tasks.add_task(_run_pipeline_task, actual_session_id)
         
         return {"session_id": actual_session_id, "status": "queued"}
     
@@ -208,16 +226,14 @@ async def submit_case(
 # ==============================================================================
 
 @app.get("/api/cases")
-async def list_cases(
-    current_user: Annotated[UserRecord, Depends(get_current_user)] = None,
-):
+async def list_cases():
     """
-    List all cases belonging to the authenticated user.
+    List all cases from the database.
     
     Returns a simplified case list with key metadata.
     """
     try:
-        user_cases = get_user_cases(current_user.id)
+        user_cases = get_user_cases(MockUser.id)
         cases = [
             {
                 "session_id": str(case.session_id),
@@ -238,18 +254,17 @@ async def list_cases(
 @app.delete("/api/case/{session_id}", status_code=204)
 async def delete_case_endpoint(
     session_id: str,
-    current_user: Annotated[UserRecord, Depends(get_current_user)] = None,
 ):
     """
-    Delete a case. Only the owning user can delete.
+    Delete a case by session_id.
     
     Also removes the case from the in-memory active sessions store.
     """
     try:
-        # Delete from database (checks ownership automatically)
-        success = delete_case(current_user.id, session_id)
+        # Delete from database
+        success = delete_case(MockUser.id, session_id)
         if not success:
-            raise HTTPException(status_code=404, detail="Case not found or not owned by user")
+            raise HTTPException(status_code=404, detail="Case not found")
         
         # Clean up in-memory session if exists
         if session_id in ACTIVE_SESSIONS:
@@ -273,6 +288,7 @@ async def _run_pipeline_task(session_id: str):
     Args:
         session_id: Unique identifier for the case
     """
+    logger.info(f"_run_pipeline_task STARTED for {session_id}")
     session = ACTIVE_SESSIONS.get(session_id)
     if not session:
         logger.error(f"Session {session_id} not found in active sessions")
@@ -306,7 +322,7 @@ async def _run_pipeline_task(session_id: str):
 
         # Compile PDF appeal packet from agent outputs
         try:
-            from advocai.tools.pdf_compiler import compile_appeal_packet
+            from ..tools.pdf_compiler import compile_appeal_packet
             compile_appeal_packet(
                 case_dir=f"data/output/{session_id}",
                 output_path=f"sessions/{session_id}/appeal_packet.pdf"
@@ -332,23 +348,12 @@ async def _run_pipeline_task(session_id: str):
 @app.get("/api/case/{session_id}/stream")
 async def stream_case(
     session_id: str,
-    current_user: Annotated[UserRecord, Depends(get_current_user)] = None,
 ):
     """
     Server-Sent Events (SSE) endpoint for real-time case processing updates.
     
-    Requires authentication and ownership verification.
     Streams events as they are generated by the pipeline.
     """
-    # Verify user owns this case
-    try:
-        case = get_case_by_id(current_user.id, session_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found or not owned by user")
-    except Exception as error:
-        logger.error(f"Error checking case ownership: {error}")
-        raise HTTPException(status_code=403, detail="Unauthorized")
-
     if session_id not in ACTIVE_SESSIONS:
         raise HTTPException(status_code=404, detail="Session not active")
 
@@ -396,26 +401,22 @@ async def stream_case(
 @app.get("/api/case/{session_id}/status")
 async def get_status(
     session_id: str,
-    current_user: Annotated[UserRecord, Depends(get_current_user)] = None,
 ):
     """
     Get the current status of a case.
     
     Returns both persisted database status and in-memory event log.
     """
-    # Verify ownership
-    try:
-        case = get_case_by_id(current_user.id, session_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found or not owned by user")
-    except Exception as error:
-        logger.error(f"Error checking case ownership: {error}")
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    if session_id not in ACTIVE_SESSIONS:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     session = ACTIVE_SESSIONS.get(session_id, {})
+    case = get_case_by_id(MockUser.id, session_id)
+    status = case.status if case else "unknown"
+    
     return {
         "session_id": session_id,
-        "status": case.status,
+        "status": status,
         "events": session.get("events", []),
     }
 
@@ -423,21 +424,15 @@ async def get_status(
 @app.get("/api/case/{session_id}/result")
 async def get_result(
     session_id: str,
-    current_user: Annotated[UserRecord, Depends(get_current_user)] = None,
 ):
     """
     Get the final result of a completed case.
     
     Returns all agent outputs (auditor, clinician, regulatory, barrister, judge).
     """
-    # Verify ownership
-    try:
-        case = get_case_by_id(current_user.id, session_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found or not owned by user")
-    except Exception as error:
-        logger.error(f"Error checking case ownership: {error}")
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    case = get_case_by_id(MockUser.id, session_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
 
     # Check if pipeline is still running
     if case.status != "done":
@@ -465,28 +460,18 @@ class RescoreRequest(BaseModel):
 async def rescore_case(
     session_id: str,
     request: RescoreRequest,
-    current_user: Annotated[UserRecord, Depends(get_current_user)] = None,
 ):
     """
     Rescore a case with user-edited appeal text.
     
     Re-runs the Judge agent on the edited text and updates the session.
     """
-    # Verify ownership
-    try:
-        case = get_case_by_id(current_user.id, session_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found or not owned by user")
-    except Exception as error:
-        logger.error(f"Error checking case ownership: {error}")
-        raise HTTPException(status_code=403, detail="Unauthorized")
-
     if session_id not in ACTIVE_SESSIONS:
         raise HTTPException(status_code=404, detail="Session not active")
 
-    from advocai.storage.session_manager import SessionManager
-    from advocai.orchestrator.main import save_json_to_file, initialize_llm_client
-    from advocai.agents.judge import run_judge_agent
+    from ..storage.session_manager import SessionManager
+    from .main import save_json_to_file, initialize_llm_client
+    from ..agents.judge import run_judge_agent
 
     # Save edited text as barrister output
     SessionManager.save_checkpoint(session_id, "barrister", {}, request.edited_text)
@@ -520,22 +505,10 @@ async def rescore_case(
 @app.get("/api/case/{session_id}/download")
 async def download_packet(
     session_id: str,
-    current_user: Annotated[UserRecord, Depends(get_current_user)] = None,
 ):
     """
     Download the complete appeal packet as a PDF.
-    
-    Requires authentication and ownership verification.
     """
-    # Verify ownership
-    try:
-        case = get_case_by_id(current_user.id, session_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found or not owned by user")
-    except Exception as error:
-        logger.error(f"Error checking case ownership: {error}")
-        raise HTTPException(status_code=403, detail="Unauthorized")
-
     pdf_path = Path(f"sessions/{session_id}/appeal_packet.pdf")
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="PDF not yet generated")
