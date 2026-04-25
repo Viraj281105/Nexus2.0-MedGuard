@@ -6,12 +6,55 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ============================================================
+-- 0. users — User accounts (already created by auth module)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS users (
+    id              SERIAL PRIMARY KEY,
+    email           TEXT NOT NULL UNIQUE,
+    hashed_password TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS users_email_idx ON users (email);
+
+-- ============================================================
+-- 0.5. user_sessions — Links users to their case sessions
+-- ============================================================
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id              BIGSERIAL PRIMARY KEY,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id      UUID NOT NULL,
+    
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id
+    ON user_sessions (user_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_unique
+    ON user_sessions (user_id, session_id);
+
+-- ============================================================
 -- 1. sessions — Tracks one full workflow run
 -- ============================================================
 CREATE TABLE IF NOT EXISTS sessions (
     session_id       UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- Status tracking
+    status           TEXT DEFAULT 'queued',
+    
+    -- Case metadata
+    patient_name     TEXT,
+    insurer_name     TEXT,
+    procedure_denied TEXT,
+    denial_date      TEXT,
+    notes            TEXT,
+    
+    -- File paths
+    denial_path      TEXT,
+    policy_path      TEXT,
 
     -- last successfully completed stage
     last_completed_stage TEXT,
