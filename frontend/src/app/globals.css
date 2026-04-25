@@ -1,12 +1,35 @@
+/* ==========================================================================
+   Tailwind CSS v4 – Global Stylesheet for MedGuard AI
+   --------------------------------------------------------------------------
+   Organised into clearly separated sections:
+     1. Tailwind import & custom theme tokens
+     2. CSS custom properties (design system)
+     3. Base element resets
+     4. Reusable utility classes
+     5. Decorative background layers & animations
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. TAILWIND IMPORT & THEME TOKENS
+   -------------------------------------------------------------------------- */
+
 @import "tailwindcss";
 
+/**
+ * Custom design tokens that extend the default Tailwind v4 theme.
+ * These values can be used anywhere Tailwind utilities are accepted,
+ * e.g. `bg-primary`, `text-neutral-700`, `bg-gradient-brand`.
+ */
 @theme {
+  /* ── Brand palette ──────────────────────────────────────────────────── */
   --color-primary: #4f7df3;
   --color-primary-dark: #3b6de0;
   --color-accent: #4fc3a1;
   --color-success: #56c271;
   --color-warning: #f59e0b;
   --color-danger: #ef4444;
+
+  /* ── Neutral ramp (slate) ───────────────────────────────────────────── */
   --color-neutral-50: #f8fafc;
   --color-neutral-100: #f1f5f9;
   --color-neutral-200: #e2e8f0;
@@ -17,11 +40,27 @@
   --color-neutral-700: #334155;
   --color-neutral-800: #1e293b;
   --color-neutral-900: #0f172a;
-  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
-  --gradient-brand: linear-gradient(135deg, #4f7df3 0%, #4fc3a1 50%, #56c271 100%);
+
+  /* ── Typography ─────────────────────────────────────────────────────── */
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans',
+    'Helvetica Neue', sans-serif;
+
+  /* ── Reusable gradient ──────────────────────────────────────────────── */
+  --gradient-brand: linear-gradient(
+    135deg,
+    #4f7df3 0%,
+    #4fc3a1 50%,
+    #56c271 100%
+  );
 }
 
+/* --------------------------------------------------------------------------
+   2. CSS CUSTOM PROPERTIES (DESIGN SYSTEM)
+   -------------------------------------------------------------------------- */
+
 :root {
+  /* ── Surface colours (HSL for opacity tweaking) ─────────────────────── */
   --background: 210 40% 98%;
   --foreground: 217 32.6% 17.5%;
   --card: 0 0% 100%;
@@ -30,30 +69,63 @@
   --popover-foreground: 217 32.6% 17.5%;
   --muted: 210 40% 96.1%;
   --muted-foreground: 215.4 16.3% 46.9%;
+
+  /* ── Interactive colours ────────────────────────────────────────────── */
   --accent: 221 83% 53%;
   --accent-foreground: 210 40% 98%;
   --destructive: 0 84.2% 60.2%;
   --destructive-foreground: 210 40% 98%;
+
+  /* ── Borders & rings ────────────────────────────────────────────────── */
   --border: 214.3 31.8% 91.4%;
   --input: 214.3 31.8% 91.4%;
   --ring: 221 83% 53%;
+
+  /* ── Misc ───────────────────────────────────────────────────────────── */
   --radius: 0.75rem;
-  --brand-gradient: linear-gradient(135deg, #4f7df3 0%, #4fc3a1 50%, #56c271 100%);
+
+  /* Convenience aliases for the brand gradient & shadow */
+  --brand-gradient: linear-gradient(
+    135deg,
+    #4f7df3 0%,
+    #4fc3a1 50%,
+    #56c271 100%
+  );
   --brand-shadow: 0 4px 24px -1px rgba(79, 125, 243, 0.15);
 }
 
+/* --------------------------------------------------------------------------
+   3. BASE ELEMENT RESETS
+   -------------------------------------------------------------------------- */
+
+/* Let all elements inherit the border colour from the design system */
 * {
   border-color: hsl(var(--border));
 }
 
-html, body {
+/* Prevent horizontal overflow and remove default margin */
+html,
+body {
   margin: 0;
   padding: 0;
   overflow-x: hidden;
 }
 
+/**
+ * Body styles
+ * - Animated multi-stop gradient background
+ * - Hard-coded dark text (light theme only; dark mode would need overrides)
+ * - Full-height minimum for sticky footer patterns
+ */
 body {
-  background: linear-gradient(160deg, #bfdbfe 0%, #a7f3d0 25%, #bbf7d0 50%, #c7d2fe 75%, #a5f3fc 100%) !important;
+  background: linear-gradient(
+    160deg,
+    #bfdbfe 0%,
+    #a7f3d0 25%,
+    #bbf7d0 50%,
+    #c7d2fe 75%,
+    #a5f3fc 100%
+  ) !important;
   color: #0f172a;
   font-family: var(--font-sans);
   line-height: 1.5;
@@ -61,49 +133,94 @@ body {
   min-height: 100vh;
 }
 
+/* Enforce light colour scheme (prevents auto-darkening on some browsers) */
 html {
   color-scheme: light;
 }
 
-.card-glass {
-  background: hsl(var(--card) / 0.80);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid hsl(var(--border) / 0.6);
-  box-shadow: 0 4px 24px -1px rgba(79, 125, 243, 0.12);
-}
+/* --------------------------------------------------------------------------
+   4. REUSABLE UTILITY CLASSES
+   -------------------------------------------------------------------------- */
 
+/**
+ * Glass-morphism card style.
+ * Semi-transparent background + backdrop blur gives the "frosted glass" look
+ * that the UI relies on throughout the application.
+ */
+.card-glass,
 .glass-panel {
-  background: hsl(var(--card) / 0.80);
+  background: hsl(var(--card) / 0.8);
   backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px); /* Safari support */
   border: 1px solid hsl(var(--border) / 0.6);
   box-shadow: 0 4px 24px -1px rgba(79, 125, 243, 0.12);
 }
 
+/**
+ * Applies the brand gradient to text (headlines, logos, etc.).
+ * Uses background-clip so the gradient fills the text fill, not the box.
+ */
 .gradient-text {
-  background: linear-gradient(135deg, #4f7df3 0%, #4fc3a1 50%, #56c271 100%);
+  background: linear-gradient(
+    135deg,
+    #4f7df3 0%,
+    #4fc3a1 50%,
+    #56c271 100%
+  );
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
+/* --------------------------------------------------------------------------
+   5. DECORATIVE BACKGROUND LAYERS & ANIMATIONS
+   -------------------------------------------------------------------------- */
+
+/**
+ * ::before — Animated aurora / soft glowing orbs
+ * Sits **below** content (z-index: -2) and slowly drifts around the viewport
+ * to create a lush, premium atmosphere without affecting layout or readability.
+ */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: -2;
-  opacity: 0.70;
-  background:
-    radial-gradient(circle at 10% 20%, rgba(79, 125, 243, 0.30), transparent 35%),
-    radial-gradient(circle at 90% 10%, rgba(79, 195, 161, 0.28), transparent 40%),
-    radial-gradient(circle at 50% 85%, rgba(86, 194, 113, 0.22), transparent 40%),
-    radial-gradient(circle at 30% 60%, rgba(79, 125, 243, 0.15), transparent 35%);
+  opacity: 0.7;
+
+  /* Four overlapping radial gradients — one per brand colour */
+  background: radial-gradient(
+      circle at 10% 20%,
+      rgba(79, 125, 243, 0.3),
+      transparent 35%
+    ),
+    radial-gradient(
+      circle at 90% 10%,
+      rgba(79, 195, 161, 0.28),
+      transparent 40%
+    ),
+    radial-gradient(
+      circle at 50% 85%,
+      rgba(86, 194, 113, 0.22),
+      transparent 40%
+    ),
+    radial-gradient(
+      circle at 30% 60%,
+      rgba(79, 125, 243, 0.15),
+      transparent 35%
+    );
+
   filter: blur(60px);
   animation: auroraShift 20s ease-in-out infinite alternate;
 }
 
+/**
+ * ::after — Subtle grid overlay
+ * Adds a faint dotted grid on top of the aurora but still behind content
+ * (z-index: -1). The `multiply` blend mode helps it sit naturally over
+ * whatever colours the ::before pseudo-element is currently showing.
+ */
 body::after {
   content: "";
   position: fixed;
@@ -111,13 +228,21 @@ body::after {
   pointer-events: none;
   z-index: -1;
   opacity: 0.08;
-  background-image:
-    linear-gradient(rgba(79, 125, 243, 0.08) 1px, transparent 1px),
+
+  background-image: linear-gradient(
+      rgba(79, 125, 243, 0.08) 1px,
+      transparent 1px
+    ),
     linear-gradient(90deg, rgba(79, 195, 161, 0.06) 1px, transparent 1px);
   background-size: 48px 48px, 48px 48px;
   mix-blend-mode: multiply;
 }
 
+/**
+ * Slow, continuous drift animation for the aurora background.
+ * The alternate direction + easing creates an organic, breathing motion
+ * that never feels mechanical.
+ */
 @keyframes auroraShift {
   0% {
     transform: translate3d(0, 0, 0) scale(1);

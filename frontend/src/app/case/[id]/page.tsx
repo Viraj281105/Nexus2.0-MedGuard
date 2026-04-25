@@ -1,6 +1,9 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+// ---------------------------------------------------------------------------
+// External dependencies
+// ---------------------------------------------------------------------------
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
@@ -14,16 +17,37 @@ import {
   Zap,
 } from "lucide-react";
 
+// ---------------------------------------------------------------------------
+// Internal modules
+// ---------------------------------------------------------------------------
 import { Header } from "@/components/Header";
 import { Button } from "@/components/Button";
 import { apiUrl } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/Card";
 
-const AGENTS = ["auditor", "clinician", "regulatory", "barrister", "judge"] as const;
-type AgentName = typeof AGENTS[number];
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Ordered list of agent identifiers that form the processing pipeline. */
+const AGENTS = [
+  "auditor",
+  "clinician",
+  "regulatory",
+  "barrister",
+  "judge",
+] as const;
+
+type AgentName = (typeof AGENTS)[number];
+
+/** Possible lifecycle states for a single agent. */
 type AgentState = "pending" | "running" | "done" | "error";
 
-const AGENT_META: Record<AgentName, { icon: React.ReactNode; label: string; desc: string }> = {
+/** Human-readable metadata displayed in the pipeline sidebar. */
+const AGENT_META: Record<
+  AgentName,
+  { icon: React.ReactNode; label: string; desc: string }
+> = {
   auditor: {
     icon: "🔍",
     label: "Document Auditor",
@@ -51,104 +75,197 @@ const AGENT_META: Record<AgentName, { icon: React.ReactNode; label: string; desc
   },
 };
 
+/** Thresholds used to colour the final quality score. */
+const SCORE_THRESHOLD_HIGH = 80;
+const SCORE_THRESHOLD_MEDIUM = 50;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a record of initial agent states (all "pending").
+ * Extracted so the intent is explicit at the call-site.
+ */
+const initialAgentStates = (): Record<AgentName, AgentState> =>
+  Object.fromEntries(AGENTS.map((a) => [a, "pending"])) as Record<
+    AgentName,
+    AgentState
+  >;
+
+/**
+ * Map an agent lifecycle state to a matching icon component.
+ * Pure function – safe to call inside render.
+ */
+const statusIcon = (state: AgentState): React.ReactNode => {
+  switch (state) {
+    case "done":
+      return (
+        <CheckCircle2 className="h-5 w-5 text-emerald-500 drop-shadow-sm" />
+      );
+    case "running":
+      return <Loader2 className="h-5 w-5 animate-spin text-blue-500" />;
+    case "error":
+      return <AlertCircle className="h-5 w-5 text-red-500" />;
+    default:
+      return <div className="h-5 w-5 rounded-full border-2 border-slate-300" />;
+  }
+};
+
+/**
+ * Derive a Tailwind text colour class based on the numeric score.
+ */
+const scoreColourClass = (score: number): string => {
+  if (score >= SCORE_THRESHOLD_HIGH) return "text-emerald-600";
+  if (score >= SCORE_THRESHOLD_MEDIUM) return "text-blue-600";
+  return "text-amber-600";
+};
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export default function CasePage() {
+  // ---- Routing ------------------------------------------------------------
   const params = useParams();
   const sessionId = params.id as string;
+
+  // ---- State --------------------------------------------------------------
   const [agentStates, setAgentStates] = useState<Record<AgentName, AgentState>>(
-    Object.fromEntries(AGENTS.map((a) => [a, "pending"])) as Record<AgentName, AgentState>
+    initialAgentStates
   );
   const [streamChunks, setStreamChunks] = useState<string[]>([]);
   const [pipelineDone, setPipelineDone] = useState(false);
   const [error, setError] = useState("");
   const [judgeScore, setJudgeScore] = useState<number | null>(null);
+
+  // ---- Refs ---------------------------------------------------------------
   const streamRef = useRef<EventSource | null>(null);
   const letterRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const eventSource = new EventSource(apiUrl(`/api/case/${sessionId}/stream`));
-    streamRef.current = eventSource;
+  // ---- Derived values -----------------------------------------------------
+  const isProcessing = Object.values(agentStates).some(
+    (s) => s === "running"
+  );
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
+  const formattedLetter = useMemo(
+    () => streamChunks.join(""),
+    [streamChunks]
+  );
 
-        if (data.type === "agent_start") {
+  const scoreColour = useMemo(
+    () => (judgeScore !== null ? scoreColourClass(judgeScore) : ""),
+    [judgeScore]
+  );
+
+  // ---- SSE message handler (stable ref via useCallback) -------------------
+  const handleSseMessage = useCallback((event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data);
+
+      switch (data.type) {
+        case "agent_start":
           setAgentStates((prev) => ({ ...prev, [data.agent]: "running" }));
-        }
-        if (data.type === "agent_done") {
+          break;
+
+        case "agent_done":
           setAgentStates((prev) => ({ ...prev, [data.agent]: "done" }));
-          if (data.agent === "judge" && data.output?.score) {
+          if (data.agent === "judge" && data.output?.score !== undefined) {
             setJudgeScore(data.output.score);
           }
-        }
-        if (data.type === "agent_error") {
+          break;
+
+        case "agent_error":
           setAgentStates((prev) => ({ ...prev, [data.agent]: "error" }));
           setError(`${data.agent}: ${data.message}`);
-        }
-        if (data.type === "agent_stream" && data.agent === "barrister") {
-          setStreamChunks((prev) => [...prev, data.chunk]);
-          if (letterRef.current)
-            letterRef.current.scrollTop = letterRef.current.scrollHeight;
-        }
-        if (data.type === "pipeline_done" || data.type === "close") {
-          setPipelineDone(true);
-          eventSource.close();
-        }
-        if (data.type === "error") {
-          setError(data.message);
-          eventSource.close();
-        }
-      } catch {}
-    };
+          break;
 
+        case "agent_stream":
+          if (data.agent === "barrister") {
+            setStreamChunks((prev) => [...prev, data.chunk]);
+            // Auto-scroll the letter container to the latest chunk.
+            requestAnimationFrame(() => {
+              letterRef.current?.scrollTo({
+                top: letterRef.current.scrollHeight,
+                behavior: "smooth",
+              });
+            });
+          }
+          break;
+
+        case "pipeline_done":
+        case "close":
+          setPipelineDone(true);
+          streamRef.current?.close();
+          break;
+
+        case "error":
+          setError(data.message);
+          streamRef.current?.close();
+          break;
+
+        default:
+          break; // ignore unrecognised event types
+      }
+    } catch {
+      // Gracefully ignore malformed JSON events.
+    }
+  }, []);
+
+  // ---- SSE lifecycle ------------------------------------------------------
+  useEffect(() => {
+    const eventSource = new EventSource(
+      apiUrl(`/api/case/${sessionId}/stream`)
+    );
+    streamRef.current = eventSource;
+
+    eventSource.onmessage = handleSseMessage;
+
+    /**
+     * On connection error, close the stream and fall back to a polling
+     * status check in case the pipeline already finished silently.
+     */
     eventSource.onerror = () => {
       eventSource.close();
       setTimeout(async () => {
         try {
           const res = await fetch(apiUrl(`/api/case/${sessionId}/status`));
           if (res.ok) {
-            const d = await res.json();
-            if (d.status === "done") setPipelineDone(true);
+            const body = await res.json();
+            if (body.status === "done") setPipelineDone(true);
           }
-        } catch {}
-      }, 1000);
+        } catch {
+          // Silently ignore the fallback poll error.
+        }
+      }, 1_000);
     };
 
+    // Cleanup on unmount or sessionId change.
     return () => {
       eventSource.close();
     };
-  }, [sessionId]);
+  }, [sessionId, handleSseMessage]);
 
-  const getStatusIcon = (state: AgentState) => {
-    if (state === "done") return <CheckCircle2 className="w-5 h-5 text-emerald-500 drop-shadow-sm" />;
-    if (state === "running")
-      return <Loader2 className="w-5 h-5 animate-spin text-blue-500" />;
-    if (state === "error")
-      return <AlertCircle className="w-5 h-5 text-red-500" />;
-    return <div className="h-5 w-5 rounded-full border-2 border-slate-300" />;
-  };
-
-  const scoreColor =
-    judgeScore && judgeScore >= 80
-      ? "text-emerald-600"
-      : judgeScore && judgeScore >= 50
-        ? "text-blue-600"
-        : "text-amber-600";
-
+  // ---- Render -------------------------------------------------------------
   return (
     <main className="min-h-screen bg-transparent text-slate-900">
       <Header showNav={false} />
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+      <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="space-y-8"
         >
-          {/* Header */}
+          {/* =========================================================== */}
+          {/* Top bar: back link & session ID                             */}
+          {/* =========================================================== */}
           <div className="flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-2 text-slate-500 transition-all duration-200 hover:-translate-y-0.5 hover:text-blue-600">
-              <ArrowLeft className="w-4 h-4" />
+            <Link
+              href="/"
+              className="flex items-center gap-2 text-slate-500 transition-all duration-200 hover:-translate-y-0.5 hover:text-blue-600"
+            >
+              <ArrowLeft className="h-4 w-4" />
               Back
             </Link>
             <div className="text-right">
@@ -159,57 +276,50 @@ export default function CasePage() {
             </div>
           </div>
 
-          {/* Main Content */}
-          <div className="grid lg:grid-cols-3 gap-8">
-            {/* Agent Pipeline - Left Sidebar */}
+          {/* =========================================================== */}
+          {/* Two-column layout: pipeline sidebar / report viewer         */}
+          {/* =========================================================== */}
+          <div className="grid gap-8 lg:grid-cols-3">
+            {/* ----- Left sidebar ----- */}
             <motion.div
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               className="space-y-6"
             >
-              <Card className="bg-white/70 backdrop-blur-sm border-slate-200/60 shadow-md">
+              {/* Agent pipeline card */}
+              <Card className="border-slate-200/60 bg-white/70 shadow-md backdrop-blur-sm">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
-                    <Zap className="w-5 h-5 text-blue-600 drop-shadow-sm" />
+                    <Zap className="h-5 w-5 text-blue-600 drop-shadow-sm" />
                     Processing Pipeline
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {AGENTS.map((agent, i) => {
+                  {AGENTS.map((agent, idx) => {
                     const meta = AGENT_META[agent];
                     const state = agentStates[agent];
-                    const isComplete = state === "done";
-                    const isRunning = state === "running";
-                    const isError = state === "error";
+                    const isLast = idx === AGENTS.length - 1;
 
                     return (
                       <motion.div
                         key={agent}
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: i * 0.05 }}
+                        transition={{ delay: idx * 0.05 }}
                       >
                         <div className="space-y-2">
                           <div className="flex items-start gap-3">
-                            <div
-                              className={`mt-0.5 ${
-                                isComplete
-                                  ? "text-emerald-500"
-                                  : isRunning
-                                    ? "text-blue-500"
-                                    : isError
-                                      ? "text-red-500"
-                                      : "text-slate-400"
-                              }`}
-                            >
-                              {getStatusIcon(state)}
+                            <div className="mt-0.5">
+                              {statusIcon(state)}
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <p className={`font-medium text-sm ${
-                                isComplete || isRunning
-                                  ? "text-slate-900"
-                                  : "text-slate-700"
-                              }`}>
+                            <div className="min-w-0 flex-1">
+                              <p
+                                className={`text-sm font-medium ${
+                                  state === "done" || state === "running"
+                                    ? "text-slate-900"
+                                    : "text-slate-700"
+                                }`}
+                              >
                                 {meta.label}
                               </p>
                               <p className="mt-0.5 text-xs text-slate-500">
@@ -223,7 +333,8 @@ export default function CasePage() {
                               </p>
                             </div>
                           </div>
-                          {i < AGENTS.length - 1 && (
+                          {/* Connector line between pipeline steps */}
+                          {!isLast && (
                             <div className="ml-2.5 h-2 w-0.5 bg-slate-200" />
                           )}
                         </div>
@@ -233,23 +344,23 @@ export default function CasePage() {
                 </CardContent>
               </Card>
 
-              {/* Score Card */}
+              {/* Quality score card (only shown when available) */}
               {judgeScore !== null && (
                 <motion.div
                   initial={{ opacity: 0, scale: 0.9 }}
                   animate={{ opacity: 1, scale: 1 }}
                 >
-                  <Card className="bg-gradient-to-br from-blue-50 to-emerald-50 border-blue-200/60 shadow-md">
-                    <CardContent className="pt-6 text-center space-y-3">
+                  <Card className="border-blue-200/60 bg-gradient-to-br from-blue-50 to-emerald-50 shadow-md">
+                    <CardContent className="space-y-3 pt-6 text-center">
                       <p className="text-sm font-medium text-slate-500">
                         Analysis Quality Score
                       </p>
-                      <p className={`text-4xl font-bold ${scoreColor}`}>
+                      <p className={`text-4xl font-bold ${scoreColour}`}>
                         {judgeScore}/100
                       </p>
                       <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
                         <div
-                          className={`h-full rounded-full bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271]`}
+                          className="h-full rounded-full bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271]"
                           style={{ width: `${judgeScore}%` }}
                         />
                       </div>
@@ -258,7 +369,7 @@ export default function CasePage() {
                 </motion.div>
               )}
 
-              {/* Error Card */}
+              {/* Error card (only shown when an error exists) */}
               {error && (
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
@@ -276,14 +387,14 @@ export default function CasePage() {
               )}
             </motion.div>
 
-            {/* Live Output - Main Content */}
+            {/* ----- Main report viewer ----- */}
             <motion.div
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               className="lg:col-span-2"
             >
-              <Card className="h-full bg-white/70 backdrop-blur-sm border-slate-200/60 shadow-md">
-                <CardHeader className="flex items-center justify-between flex-row">
+              <Card className="h-full border-slate-200/60 bg-white/70 shadow-md backdrop-blur-sm">
+                <CardHeader className="flex flex-row items-center justify-between">
                   <CardTitle>Analysis Report</CardTitle>
                   {pipelineDone && (
                     <a
@@ -294,8 +405,8 @@ export default function CasePage() {
                     >
                       <Button
                         size="sm"
-                        icon={<Download className="w-4 h-4" />}
-                        className="bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] text-white shadow-md hover:shadow-lg hover:shadow-blue-300/30 transition-all duration-300 font-semibold"
+                        icon={<Download className="h-4 w-4" />}
+                        className="bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] font-semibold text-white shadow-md transition-all duration-300 hover:shadow-lg hover:shadow-blue-300/30"
                       >
                         Download PDF
                       </Button>
@@ -307,13 +418,13 @@ export default function CasePage() {
                     ref={letterRef}
                     className="h-[500px] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 font-mono text-sm leading-relaxed whitespace-pre-wrap text-slate-700 shadow-inner"
                   >
-                    {streamChunks.length > 0 ? (
-                      <>{streamChunks.join("")}</>
+                    {formattedLetter.length > 0 ? (
+                      <>{formattedLetter}</>
                     ) : (
                       <div className="flex h-full items-center justify-center text-slate-500">
-                        {Object.values(agentStates).some((s) => s === "running") ? (
+                        {isProcessing ? (
                           <>
-                            <Loader2 className="w-5 h-5 animate-spin mr-2 text-blue-500" />
+                            <Loader2 className="mr-2 h-5 w-5 animate-spin text-blue-500" />
                             Agents processing...
                           </>
                         ) : pipelineDone ? (
@@ -329,7 +440,9 @@ export default function CasePage() {
             </motion.div>
           </div>
 
-          {/* Bottom Actions */}
+          {/* =========================================================== */}
+          {/* Bottom action buttons (visible only after pipeline done)    */}
+          {/* =========================================================== */}
           {pipelineDone && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -337,12 +450,19 @@ export default function CasePage() {
               className="flex flex-col justify-between gap-4 border-t border-slate-200 pt-6 sm:flex-row"
             >
               <Link href="/" className="inline-block">
-                <Button variant="ghost" icon={<ArrowLeft className="w-4 h-4" />} className="hover:bg-slate-100 transition-all duration-300">
+                <Button
+                  variant="ghost"
+                  icon={<ArrowLeft className="h-4 w-4" />}
+                  className="transition-all duration-300 hover:bg-slate-100"
+                >
                   Back to Home
                 </Button>
               </Link>
               <Link href="/submit" className="inline-block">
-                <Button icon={<Plus className="w-4 h-4" />} className="bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] text-white shadow-md hover:shadow-lg hover:shadow-blue-300/30 transition-all duration-300 font-semibold">
+                <Button
+                  icon={<Plus className="h-4 w-4" />}
+                  className="bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] font-semibold text-white shadow-md transition-all duration-300 hover:shadow-lg hover:shadow-blue-300/30"
+                >
                   Submit Another Case
                 </Button>
               </Link>
