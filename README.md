@@ -385,10 +385,17 @@ MedGuard-AI/
 │   │   └── speech_parser.py            # OpenAI Whisper audio transcription
 │   │
 │   ├── agents/                          # MedGuard Bill Audit Orchestrator
-│   │   └── orchestrator.py              # Runs the bill audit pipeline
+│   │   └── orchestrator.py             # Runs the bill audit pipeline
 │   │
 │   ├── db/                              # Database utilities
-│   │   └── vector_store.py              # Vector search for documents
+│   │   └── vector_store.py             # Vector search for documents
+│   │
+│   ├── data/                            # Runtime data (bill auditing)
+│   │   ├── input/                       # Uploaded files
+│   │   └── output/                      # Processed outputs
+│   │
+│   ├── uploads/                         # Raw file uploads
+│   ├── sessions/                        # Session storage
 │   │
 │   └── advocai/                         # AdvocAI Insurance Appeal Engine
 │       ├── agents/                      # Individual LLM agents
@@ -410,10 +417,10 @@ MedGuard-AI/
 │       │   └── __init__.py
 │       │
 │       ├── tools/                       # Shared utilities
-│       │   ├── document_reader.py       # PDF/image reading
-│       │   ├── io_utils.py              # File I/O helpers
-│       │   ├── pdf_compiler.py          # ReportLab PDF assembly
-│       │   ├── pubmed_search.py         # Clinical evidence fetch
+│       │   ├── document_reader.py      # PDF/image reading
+│       │   ├── io_utils.py             # File I/O helpers
+│       │   ├── pdf_compiler.py         # ReportLab PDF assembly
+│       │   ├── pubmed_search.py        # Clinical evidence fetch
 │       │   └── __init__.py
 │       │
 │       ├── storage/                     # Persistence layer
@@ -427,13 +434,15 @@ MedGuard-AI/
 │       │   │   └── __init__.py
 │       │   └── __init__.py
 │       │
-│       ├── config/                     # Configuration
+│       ├── config/                      # Configuration
 │       │   ├── settings.py             # App configuration
 │       │   └── __init__.py
 │       │
-│       └── data/                       # Runtime data
-│           ├── input/                  # Uploaded files
-│           ├── output/                 # AI outputs
+│       ├── sessions/                    # AdvocAI session storage
+│       │
+│       └── data/                        # Runtime data
+│           ├── input/                   # Uploaded files
+│           ├── output/                  # AI outputs
 │           └── knowledge/
 │               └── law_library.json    # IRDAI regulations
 │
@@ -443,7 +452,6 @@ MedGuard-AI/
 │   │   │   ├── layout.tsx              # Root layout
 │   │   │   ├── globals.css             # Tailwind tokens + utilities
 │   │   │   ├── page.tsx                # 🏠 Home — drag & drop bill upload
-│   │   │   │
 │   │   │   ├── login/page.tsx          # 🔐 Login page
 │   │   │   ├── register/page.tsx       # 📝 Registration page
 │   │   │   ├── submit/page.tsx         # 📋 4-step appeal wizard
@@ -451,7 +459,7 @@ MedGuard-AI/
 │   │   │   ├── results/page.tsx        # 📊 Bill audit results
 │   │   │   └── case/[id]/page.tsx      # 🎬 Live case view + SSE stream
 │   │   │
-│   │   ├── components/                 # Reusable React components
+│   │   ├── components/                  # Reusable React components
 │   │   │   ├── Header.tsx              # Navigation header
 │   │   │   ├── Button.tsx              # Button variants
 │   │   │   ├── Card.tsx                # Card containers
@@ -472,39 +480,20 @@ MedGuard-AI/
 │   └── README.md
 │
 ├── docs/                                # Documentation
-│   ├── *.pptx                           # Presentation slides
-│   ├── *.svg                            # Architecture diagrams
-│   └── *.md                             # Setup guides
+│   ├── medguard_ai_architecture.svg    # Architecture diagram
+│   ├── MedGuard-AI-v1.pptx            # Presentation slides (v1)
+│   ├── MedGuard-AI-v2.pptx            # Presentation slides (v2)
+│   └── Documentation Draft 1.docx     # Draft documentation
 │
 ├── docker-compose.yml                   # Full stack orchestration
 ├── .env.example                         # Environment template
 ├── INTEGRATION_GUIDE.md                 # 🔌 Backend-Frontend integration docs
 ├── INTEGRATION_SUMMARY.md               # 📋 Integration checklist
-├── launch.bat                           # Windows: start all services
+├── launch.bat                           # Windows: start all services + browser
 ├── start.bat                            # Windows: start backend
 ├── test_e2e.py                          # End-to-end API tests
-├── README.md                            # 📖 This file
+├── README.md                            # 📖 Project documentation
 └── package.json                         # Root-level npm scripts
-```
-
----
-│   │       └── api.ts              # Auth helpers, token management, fetch wrapper
-│   ├── next.config.ts              # API proxy rewrites to backend
-│   ├── package.json
-│   └── Dockerfile                  # Frontend container (standalone output)
-│
-├── docs/                           # Project documentation and presentations
-│   ├── medguard_ai_architecture.svg
-│   ├── MedGuard-AI-v1.pptx
-│   ├── MedGuard-AI-v2.pptx
-│   └── Documentation Draft 1.docx
-│
-├── docker-compose.yml              # Full stack: DB + Backend + Frontend
-├── .env.example                    # Environment variable template
-├── start.bat                       # Windows: starts both servers in new terminals
-├── launch.bat                      # Windows: starts everything + opens browser
-├── test_e2e.py                     # End-to-end API test script
-└── package.json                    # Root-level scripts
 ```
 
 ---
