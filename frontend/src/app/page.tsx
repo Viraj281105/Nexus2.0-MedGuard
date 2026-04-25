@@ -807,7 +807,6 @@ export default function Home() {
                 className="bg-white text-blue-600 hover:bg-blue-50 shadow-md hover:shadow-lg hover:scale-[1.05] transition-all duration-300 font-semibold text-lg px-10 py-4 min-w-[240px] whitespace-nowrap"
               >
                 Start Free Analysis
-                <ArrowRight className="w-5 h-5" />
               </Button>
             </Link>
           </div>

@@ -5,7 +5,7 @@
 ### 1. Database Schema Updates
 **File**: `backend/advocai/storage/postgres/schema.sql`
 
-**Added Tables**:
+**Added Tables**: 
 - `users` - User accounts with email and hashed passwords
 - `user_sessions` - Links users to their case sessions for ownership tracking
 
