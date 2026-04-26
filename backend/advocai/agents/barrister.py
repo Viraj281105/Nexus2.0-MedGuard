@@ -21,18 +21,30 @@ logger.setLevel(logging.INFO)
 DEBUG_OUTPUT_DIR = "data/output"
 
 def _detect_jurisdiction(denial: any) -> str:
-    """Detect claim jurisdiction from denial details."""
+    """
+    Detect jurisdiction — prefers the auditor's pre-detected value,
+    falls back to heuristic scan if not present.
+    """
+    # Trust auditor's detection first (set in run_auditor_agent)
+    auditor_jurisdiction = getattr(denial, "jurisdiction", "") or ""
+    if auditor_jurisdiction and auditor_jurisdiction != "unknown":
+        return "india" if "india" in auditor_jurisdiction.lower() else "us"
+
+    # Fallback: heuristic scan across all denial fields
     text = " ".join([
         getattr(denial, "insurer_reason_snippet", "") or "",
         getattr(denial, "policy_clause_text", "") or "",
         getattr(denial, "denial_code", "") or "",
         getattr(denial, "procedure_denied", "") or "",
     ]).lower()
-    indian_signals = ["irdai", "cghs", "irda", "tpa", "star health",
-                      "medi assist", "rs.", "rupees", "apollo", "rc-"]
-    if any(s in text for s in indian_signals):
-        return "india"
-    return "us"
+
+    indian_signals = [
+        "irdai", "cghs", "irda", "tpa", "star health", "niva bupa",
+        "hdfc ergo", "care health", "medi assist", "rs.", "rupees", "₹",
+        "apollo", "fortis", "kokilaben", "manipal", "narayana", "rc-",
+        "bima", "lokpal",
+    ]
+    return "india" if any(s in text for s in indian_signals) else "us"
 
 def extract_legal_points(reg: Any) -> List[Dict[str, Any]]:
     """
@@ -179,6 +191,7 @@ def run_barrister_agent(
 
     # Step 3: Build system instruction for the LLM
     jurisdiction = _detect_jurisdiction(denial)
+    logger.info(f"[Barrister] Jurisdiction resolved to: {jurisdiction}")
 
     if jurisdiction == "india":
         jurisdiction_instruction = (

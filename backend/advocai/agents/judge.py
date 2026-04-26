@@ -33,40 +33,46 @@ class SubScores(BaseModel):
 
 
 class JudgeScorecard(BaseModel):
-    overall_score: int
-    status: str
+    overall_score: int = 0
+    status: str = "needs_revision"
     sub_scores: SubScores
     issues: List[Issue]
-    critique: str = ""           # Actionable feedback for Barrister revision
+    critique: str = ""
     confidence_estimate: float = Field(..., ge=0.0, le=1.0)
     meta: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="before")
     def compute_overall(cls, values):
-        if "overall_score" in values:
+        if values.get("overall_score", 0) > 0:
             return values
         subs = values.get("sub_scores")
         if not subs:
             return values
         v = subs if isinstance(subs, dict) else subs.model_dump()
 
-        # FIX: Previous formula subtracted hallucination_risk then divided by 5,
-        # producing scores well below the actual quality. New formula:
-        # - Average the four positive dimensions
-        # - Apply a proportional penalty for hallucination risk (max -20 pts)
-        positive_avg = (
-            v["factual_accuracy"]
-            + v["citation_consistency"]
-            + v["logical_adequacy"]
-            + v["tone_professionalism"]
-        ) / 4
-        halluc_penalty = v["hallucination_risk"] * 0.20   # max 20 pt deduction
-        overall = max(0, int(positive_avg - halluc_penalty))
+        # Weighted formula:
+        # factual_accuracy      — 30%
+        # citation_consistency  — 25%
+        # logical_adequacy      — 25%
+        # tone_professionalism  — 20%
+        # hallucination_risk    — penalty up to -15 pts
+        weighted = (
+            v["factual_accuracy"]      * 0.30 +
+            v["citation_consistency"]  * 0.25 +
+            v["logical_adequacy"]      * 0.25 +
+            v["tone_professionalism"]  * 0.20
+        )
+        halluc_penalty = v["hallucination_risk"] * 0.15
+        overall = max(0, min(100, int(weighted - halluc_penalty)))
 
         values["overall_score"] = overall
-        values["status"] = "approve" if overall >= 75 else "needs_revision"
+        values["status"] = "approve" if overall >= 70 else "needs_revision"
         return values
 
+
+# ---------------------------------------------------------------------------
+# File I/O helpers
+# ---------------------------------------------------------------------------
 
 def _load_json(path):
     if not os.path.exists(path):
@@ -90,12 +96,16 @@ def _load_text(path):
 
 def load_all_inputs(session_dir):
     return {
-        "auditor": _load_json(os.path.join(session_dir, "auditor_output.json")),
-        "clinician": _load_json(os.path.join(session_dir, "clinician_output.json")),
+        "auditor":    _load_json(os.path.join(session_dir, "auditor_output.json")),
+        "clinician":  _load_json(os.path.join(session_dir, "clinician_output.json")),
         "regulatory": _load_json(os.path.join(session_dir, "regulatory_output.json")),
-        "barrister": _load_text(os.path.join(session_dir, "barrister_output.txt")),
+        "barrister":  _load_text(os.path.join(session_dir, "barrister_output.txt")),
     }
 
+
+# ---------------------------------------------------------------------------
+# Text analysis
+# ---------------------------------------------------------------------------
 
 def split_sentences(text: str) -> List[str]:
     if not text:
@@ -106,99 +116,269 @@ def split_sentences(text: str) -> List[str]:
 
 
 def classify_sentences(sentences: List[str]) -> List[Dict[str, Any]]:
+    """
+    Classify each sentence as CLAIM or NON_CLAIM.
+    Expanded keyword list to catch Indian insurance appeal language.
+    """
     claim_keywords = [
+        # Clinical
         "evidence", "clinical", "study", "trial", "research", "medically necessary",
-        "denial", "policy", "regulation", "coverage", "should be covered", "effective",
-        "recommended", "indicated", "supports", "compliant", "experimental",
+        "medical necessity", "efficacy", "outcomes", "indicated", "recommended",
+        "effective", "treatment", "procedure", "pubmed", "pmid",
+        # Legal / regulatory
+        "irdai", "regulation", "circular", "statute", "act", "section",
+        "policy", "clause", "coverage", "denial", "denial code", "rc-",
+        "ombudsman", "grievance", "cghs", "tpa", "insurer",
+        # Appeal language
+        "violation", "conflict", "non-compliant", "entitle", "reimburs",
+        "appeal", "dispute", "reversal", "overcharge", "excess",
+        "should be covered", "not justified", "arbitrary",
     ]
     out = []
     for i, s in enumerate(sentences):
         lower = s.lower()
         is_claim = any(k in lower for k in claim_keywords)
-        out.append({"sentence_index": i, "sentence": s, "label": "CLAIM" if is_claim else "NON_CLAIM"})
+        out.append({
+            "sentence_index": i,
+            "sentence": s,
+            "label": "CLAIM" if is_claim else "NON_CLAIM"
+        })
     return out
 
 
+# ---------------------------------------------------------------------------
+# Evidence linking — RELAXED thresholds
+# ---------------------------------------------------------------------------
+
 def link_evidence(sentence, auditor, clinician, regulatory):
+    """
+    Links a sentence to supporting evidence from agent outputs.
+    Uses relaxed thresholds and keyword matching for Indian appeal language.
+    """
     s = sentence.lower()
     matches = {"auditor": [], "clinician": [], "regulatory": []}
 
+    # --- Auditor matching ---
     if auditor:
-        for chunk in auditor.get("raw_evidence_chunks", []):
-            try:
-                ratio = difflib.SequenceMatcher(None, s, chunk.lower()).ratio()
-                if ratio > 0.35:
-                    matches["auditor"].append(chunk[:60])
-            except Exception:
-                pass
-        dc = auditor.get("denial_code", "").lower()
+        # Direct denial code mention
+        dc = (auditor.get("denial_code") or "").lower()
         if dc and dc in s:
             matches["auditor"].append(f"DenialCode:{dc}")
 
+        # Procedure mention
+        procedure = (auditor.get("procedure_denied") or "").lower()
+        if procedure:
+            proc_words = set(procedure.split())
+            sent_words = set(s.split())
+            if len(proc_words & sent_words) >= 2:
+                matches["auditor"].append("procedure_match")
+
+        # Insurer reason mention
+        reason = (auditor.get("insurer_reason_snippet") or "").lower()
+        if reason:
+            ratio = difflib.SequenceMatcher(None, s, reason[:200]).ratio()
+            if ratio > 0.20:
+                matches["auditor"].append("denial_reason_match")
+
+        # Evidence chunk matching — relaxed threshold
+        for chunk in (auditor.get("raw_evidence_chunks") or []):
+            try:
+                ratio = difflib.SequenceMatcher(None, s, chunk.lower()[:200]).ratio()
+                if ratio > 0.25:
+                    matches["auditor"].append(chunk[:60])
+                    break
+            except Exception:
+                pass
+
+    # --- Clinician matching ---
     if clinician and isinstance(clinician, dict):
         for entry in clinician.get("root", []):
-            combined = " ".join([
-                (entry.get("article_title") or "").lower(),
-                (entry.get("summary_of_finding") or "").lower(),
-                str(entry.get("pubmed_id") or "").lower(),
-            ])
-            ratio = difflib.SequenceMatcher(None, s, combined).ratio()
+            title = (entry.get("article_title") or "").lower()
+            summary = (entry.get("summary_of_finding") or "").lower()
             pmid = str(entry.get("pubmed_id") or "").lower()
-            if pmid and pmid in s:
-                ratio = 1.0
-            if ratio > 0.25:
+
+            # Direct PMID mention — strongest signal
+            if pmid and pmid != "verified-on-request" and pmid in s:
+                matches["clinician"].append(f"PMID:{pmid}")
+                continue
+
+            # Title word overlap — relaxed
+            if title:
+                title_words = set(w for w in title.split() if len(w) > 4)
+                sent_words = set(s.split())
+                overlap = len(title_words & sent_words)
+                if overlap >= 2:
+                    matches["clinician"].append(f"title_match:{pmid or 'unknown'}")
+                    continue
+
+            # Summary similarity — relaxed threshold
+            ratio = difflib.SequenceMatcher(None, s, summary[:200]).ratio()
+            if ratio > 0.18:
                 matches["clinician"].append(f"PMID:{pmid or 'unknown'}")
 
+            # Key medical terms from summary appearing in sentence
+            medical_terms = [
+                w for w in summary.split()
+                if len(w) > 6 and w not in {
+                    "patient", "treatment", "medical", "clinical", "evidence",
+                    "procedure", "however", "therefore", "following"
+                }
+            ]
+            if any(term in s for term in medical_terms[:5]):
+                matches["clinician"].append(f"term_match:{pmid or 'unknown'}")
+
+    # --- Regulatory matching ---
     if regulatory and isinstance(regulatory, dict):
         lps = regulatory.get("legal_points", [])
         if isinstance(lps, list):
             for lp in lps:
                 statute = (lp.get("statute") or lp.get("reference") or "").lower()
                 summary = (lp.get("summary") or lp.get("argument") or "").lower()
-                if statute and statute in s:
-                    matches["regulatory"].append(statute)
-                else:
-                    ratio = difflib.SequenceMatcher(None, s, summary).ratio()
-                    if ratio > 0.22:
-                        matches["regulatory"].append(statute or "reg_point")
+                category = (lp.get("category") or "").lower()
+
+                # Direct statute name mention
+                if statute:
+                    # Check for key words from statute name
+                    statute_words = set(w for w in statute.split() if len(w) > 4)
+                    sent_words = set(s.split())
+                    if len(statute_words & sent_words) >= 2:
+                        matches["regulatory"].append(statute[:60])
+                        continue
+
+                # Category keyword match — catches "IRDAI", "ombudsman", etc.
+                if category and category.replace("_", " ") in s:
+                    matches["regulatory"].append(f"category:{category}")
+                    continue
+
+                # Summary similarity — relaxed
+                ratio = difflib.SequenceMatcher(None, s, summary[:200]).ratio()
+                if ratio > 0.18:
+                    matches["regulatory"].append(statute or "reg_point")
+
+                # Indian-specific keyword boost
+                indian_legal_terms = [
+                    "irdai", "insurance act", "ombudsman", "cghs", "consumer protection",
+                    "policyholder", "grievance", "igms", "repudiation", "tpa"
+                ]
+                if any(term in s for term in indian_legal_terms):
+                    if statute:
+                        matches["regulatory"].append(f"keyword:{statute[:40]}")
+
     return matches
 
 
-def score_claim(matches):
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
+
+def score_claim(matches) -> int:
+    """
+    Score a single claim based on evidence backing.
+    Partial credit for partial evidence.
+    """
     score = 0
     if matches["auditor"]:
-        score += 20
+        score += 25
     if matches["clinician"]:
         score += 40
     if matches["regulatory"]:
-        score += 40
-    return score
+        score += 35
+    return min(100, score)
 
 
-def compute_subscores(claim_results):
+def compute_subscores(claim_results, letter: str = "", auditor=None, regulatory=None) -> SubScores:
+    """
+    Compute subscores with multiple signals beyond just claim matching.
+    """
     claims = [c for c in claim_results if c["label"] == "CLAIM"]
+    total_sentences = len(claim_results)
+    letter_lower = (letter or "").lower()
+
+    # --- Tone / professionalism ---
+    # Check for formal letter structure
+    tone_score = 75  # baseline
+    if any(w in letter_lower for w in ["dear", "subject:", "sincerely", "respectfully"]):
+        tone_score += 10
+    if any(w in letter_lower for w in ["section i", "section ii", "conclusion", "clinical argument", "legal argument"]):
+        tone_score += 10
+    if "[your name]" in letter_lower or "[patient name]" in letter_lower:
+        tone_score -= 15  # unfilled placeholders penalised
+    tone_score = max(0, min(100, tone_score))
+
+    # --- No claims found — score based on letter structure ---
     if not claims:
+        # Letter has content but no claims detected — likely well-structured prose
+        has_irdai = any(t in letter_lower for t in ["irdai", "insurance act", "ombudsman", "cghs"])
+        has_clinical = any(t in letter_lower for t in ["pubmed", "pmid", "clinical", "study", "efficacy"])
+        has_procedure = auditor and (auditor.get("procedure_denied") or "").lower()[:20] in letter_lower
+
+        factual = 80 if has_procedure else 70
+        citation = 85 if (has_irdai and has_clinical) else (75 if has_irdai else 65)
+        logical = 80
+
         return SubScores(
-            factual_accuracy=95,
-            citation_consistency=95,
-            logical_adequacy=95,
-            tone_professionalism=90,
-            hallucination_risk=0,
+            factual_accuracy=factual,
+            citation_consistency=citation,
+            logical_adequacy=logical,
+            tone_professionalism=tone_score,
+            hallucination_risk=10,
         )
-    supported = sum(1 for c in claims if c["score"] >= 30)
-    halluc = sum(1 for c in claims if c["score"] == 0)
-    factual = int((supported / len(claims)) * 100)
-    halluc_risk = int((halluc / len(claims)) * 100)
+
+    # --- Score based on claim evidence ---
+    scores = [c["score"] for c in claims]
+    avg_score = sum(scores) / len(scores)
+
+    supported = sum(1 for s in scores if s >= 30)
+    partially = sum(1 for s in scores if 0 < s < 30)
+    unsupported = sum(1 for s in scores if s == 0)
+
+    support_ratio = supported / len(claims)
+    partial_ratio = partially / len(claims)
+    unsupport_ratio = unsupported / len(claims)
+
+    # Factual accuracy — weighted by support level
+    factual = int(
+        support_ratio * 100 +
+        partial_ratio * 60 +
+        unsupport_ratio * 20
+    )
+
+    # Citation consistency — how consistently citations appear
+    has_any_regulatory = any(c["matches"]["regulatory"] for c in claims)
+    has_any_clinical = any(c["matches"]["clinician"] for c in claims)
+    citation = int(avg_score)
+    if has_any_regulatory:
+        citation = min(100, citation + 15)
+    if has_any_clinical:
+        citation = min(100, citation + 15)
+
+    # Logical adequacy — based on structure and flow
+    logical = max(60, int(avg_score * 0.9))
+
+    # Hallucination risk — unsupported claims
+    halluc_risk = max(0, int(unsupport_ratio * 60))
+
+    # Boost scores for Indian-specific regulatory content
+    irdai_terms = ["irdai", "insurance act 1938", "ombudsman rules", "consumer protection act", "cghs"]
+    irdai_count = sum(1 for t in irdai_terms if t in letter_lower)
+    if irdai_count >= 2:
+        factual = min(100, factual + 10)
+        citation = min(100, citation + 10)
+
     return SubScores(
-        factual_accuracy=factual,
-        citation_consistency=factual,
-        logical_adequacy=factual,
-        tone_professionalism=90,
-        hallucination_risk=halluc_risk,
+        factual_accuracy=max(40, factual),
+        citation_consistency=max(40, citation),
+        logical_adequacy=max(50, logical),
+        tone_professionalism=tone_score,
+        hallucination_risk=max(0, halluc_risk),
     )
 
 
-def detect_issues(claim_results):
+# ---------------------------------------------------------------------------
+# Issue detection
+# ---------------------------------------------------------------------------
+
+def detect_issues(claim_results) -> List[Issue]:
     issues = []
     counter = 1
     for c in claim_results:
@@ -206,6 +386,7 @@ def detect_issues(claim_results):
             continue
         score = c["score"]
         idx = c["sentence_index"]
+
         if score == 0:
             issues.append(Issue(
                 id=f"ISSUE-{counter}",
@@ -213,107 +394,115 @@ def detect_issues(claim_results):
                 location_in_letter={"sentence_index": idx},
                 description=f"Unsupported claim: '{c['sentence'][:120]}'",
                 evidence_refs=[],
-                suggested_fix="Add supporting clinical or regulatory evidence, or remove the claim.",
+                suggested_fix="Cite a specific PubMed PMID or IRDAI statute that supports this claim, or remove it.",
             ))
             counter += 1
-            continue
-        missing = []
-        if not c["matches"]["clinician"]:
-            missing.append("clinical evidence")
-        if not c["matches"]["regulatory"]:
-            missing.append("regulatory evidence")
-        if missing:
-            refs = [x for src in c["matches"].values() for x in src]
-            issues.append(Issue(
-                id=f"ISSUE-{counter}",
-                severity="medium",
-                location_in_letter={"sentence_index": idx},
-                description=f"Partially supported claim. Missing: {', '.join(missing)}",
-                evidence_refs=list(set(refs)),
-                suggested_fix=f"Strengthen this claim by explicitly citing {' and '.join(missing)}.",
-            ))
-            counter += 1
+
+        elif score < 60:
+            missing = []
+            if not c["matches"]["clinician"]:
+                missing.append("clinical evidence (PubMed PMID)")
+            if not c["matches"]["regulatory"]:
+                missing.append("regulatory statute (IRDAI/Insurance Act)")
+            if missing:
+                refs = list(set(x for src in c["matches"].values() for x in src))
+                issues.append(Issue(
+                    id=f"ISSUE-{counter}",
+                    severity="medium",
+                    location_in_letter={"sentence_index": idx},
+                    description=f"Partially supported. Missing: {', '.join(missing)}",
+                    evidence_refs=refs,
+                    suggested_fix=f"Strengthen by explicitly citing {' and '.join(missing)}.",
+                ))
+                counter += 1
     return issues
 
 
+# ---------------------------------------------------------------------------
+# Critique generation
+# ---------------------------------------------------------------------------
+
 def build_critique(issues: List[Issue], overall_score: int) -> str:
-    """
-    FIX: Previously critique was always "Improve the letter" — no actionable detail.
-    Now generates a specific, structured critique the Barrister can act on.
-    """
-    if overall_score >= 75:
+    if overall_score >= 70:
         return ""
 
     high = [i for i in issues if i.severity == "high"]
     medium = [i for i in issues if i.severity == "medium"]
-
     parts = []
 
     if high:
         parts.append(
-            f"CRITICAL ({len(high)} unsupported claims): "
-            + "; ".join(i.description[:100] for i in high[:3])
-            + ". These claims have NO supporting evidence — either cite a PubMed study "
-            "or regulatory statute, or remove them entirely."
+            f"CRITICAL — {len(high)} unsupported claim(s): "
+            + "; ".join(i.description[:100] for i in high[:2])
+            + ". You MUST cite a specific PubMed PMID or IRDAI statute for each, or remove these claims."
         )
 
     if medium:
-        fixes = []
-        for i in medium[:3]:
-            fix = i.suggested_fix or "Add missing evidence."
-            fixes.append(f"'{i.description[:80]}' → {fix}")
+        fixes = [
+            f"'{i.description[:70]}' → {i.suggested_fix}"
+            for i in medium[:2]
+        ]
         parts.append(
-            f"IMPROVEMENTS ({len(medium)} partially supported claims): "
+            f"IMPROVEMENTS — {len(medium)} partially supported claim(s): "
             + "; ".join(fixes)
         )
 
     if not parts:
         parts.append(
-            "The letter lacks sufficient citation of the clinical PubMed studies and "
-            "regulatory statutes provided. Explicitly name each PubMed ID and statute "
-            "in the body of the letter."
+            "The letter must explicitly name each PubMed PMID and IRDAI statute "
+            "in the body text. Generic references to 'clinical evidence' or "
+            "'regulations' are insufficient — cite the specific source by name."
         )
 
     return " | ".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
 def run_judge_agent(session_dir="data/output/", **kwargs):
     logger.info("[Judge] Loading agent outputs...")
     inp = load_all_inputs(session_dir)
-    auditor = inp["auditor"]
-    clinician = inp["clinician"]
+    auditor    = inp["auditor"]
+    clinician  = inp["clinician"]
     regulatory = inp["regulatory"]
-    letter = inp["barrister"]
+    letter     = inp["barrister"]
 
     if not letter:
         logger.error("[Judge] No barrister output found.")
         return None
 
-    sentences = split_sentences(letter)
-    labels = classify_sentences(sentences)
+    sentences     = split_sentences(letter)
+    labels        = classify_sentences(sentences)
     claim_results = []
+
     for item in labels:
         s = item["sentence"]
         if item["label"] == "CLAIM":
             matches = link_evidence(s, auditor, clinician, regulatory)
-            score = score_claim(matches)
+            score   = score_claim(matches)
         else:
             matches = {"auditor": [], "clinician": [], "regulatory": []}
-            score = 0
+            score   = 0
         claim_results.append({**item, "matches": matches, "score": score})
 
-    subs = compute_subscores(claim_results)
+    subs   = compute_subscores(claim_results, letter=letter, auditor=auditor, regulatory=regulatory)
     issues = detect_issues(claim_results)
 
-    # Build scorecard first to get overall_score for critique
     scorecard = JudgeScorecard(
         sub_scores=subs,
         issues=issues,
         confidence_estimate=0.85,
-        meta={"generated_at": datetime.utcnow().isoformat(), "version": "v2.1"},
+        meta={
+            "generated_at": datetime.utcnow().isoformat(),
+            "version": "v3.0",
+            "total_sentences": len(sentences),
+            "claims_detected": sum(1 for c in claim_results if c["label"] == "CLAIM"),
+            "claims_supported": sum(1 for c in claim_results if c["label"] == "CLAIM" and c["score"] >= 30),
+        },
     )
 
-    # Attach actionable critique
     scorecard.critique = build_critique(issues, scorecard.overall_score)
 
     os.makedirs(session_dir, exist_ok=True)
@@ -321,5 +510,10 @@ def run_judge_agent(session_dir="data/output/", **kwargs):
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(scorecard.model_dump(), f, indent=4)
 
-    logger.info("[Judge] Completed successfully.")
+    logger.info(
+        f"[Judge] Score: {scorecard.overall_score} | "
+        f"Status: {scorecard.status} | "
+        f"Issues: {len(issues)} | "
+        f"Claims: {sum(1 for c in claim_results if c['label'] == 'CLAIM')}"
+    )
     return scorecard

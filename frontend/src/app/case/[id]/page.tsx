@@ -386,10 +386,19 @@ export default function CasePage() {
                 <CardContent>
                   <div
                     ref={letterRef}
-                    className="h-[500px] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 font-mono text-sm leading-relaxed whitespace-pre-wrap text-slate-700 shadow-inner"
+                    className="h-[500px] overflow-y-auto rounded-xl border border-slate-200 bg-white p-6 text-sm leading-relaxed text-slate-700 shadow-inner [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
                   >
                     {formattedLetter.length > 0 ? (
-                      <>{formattedLetter}</>
+                      <div
+                        dangerouslySetInnerHTML={{
+                          __html: formattedLetter
+                            .replace(/^Subject: (.+)$/m, '<div class="mb-4 rounded-r-lg border-l-4 border-blue-400 bg-blue-50 px-4 py-3 text-xs text-blue-800">$1</div>')
+                            .replace(/^## (.+)$/gm, '<p class="mt-6 mb-2 text-[10px] font-semibold uppercase tracking-widest text-emerald-700 border-b border-emerald-100 pb-1">$1</p>')
+                            .replace(/\b(RC-\d+)\b/g, '<code class="rounded bg-red-50 px-1.5 py-0.5 font-mono text-[11px] text-red-700">$1</code>')
+                            .replace(/\n\n/g, '</p><p class="mb-3">')
+                            .replace(/^(?!<)/, '<p class="mb-3">')
+                        }}
+                      />
                     ) : (
                       <div className="flex h-full items-center justify-center text-slate-500">
                         {isProcessing ? (

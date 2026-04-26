@@ -36,6 +36,7 @@ class StructuredDenial(BaseModel):
     insurer_reason_snippet: str
     policy_clause_text: str
     procedure_denied: str
+    jurisdiction: str = "unknown"
     confidence_score: float
     raw_evidence_chunks: List[str] = Field(default_factory=list)
 
@@ -138,29 +139,11 @@ def run_auditor_agent(
     policy_path: str, 
     **kwargs
 ) -> Optional[StructuredDenial]:
-    """
-    Main entry point for the Auditor Agent.
-    
-    Orchestrates document extraction, policy snippet discovery, LLM inference,
-    and structured output validation.
-    
-    Args:
-        client: LLM client with .generate() method (supports Groq/Ollama/OpenAI)
-        denial_path: File path to insurer's denial letter (PDF/image/txt)
-        policy_path: File path to insurance policy document
-        **kwargs: Additional unused parameters (for compatibility)
-        
-    Returns:
-        StructuredDenial object with extracted denial information,
-        or None if processing fails
-    """
-    
-    # Step 1: Extract text from input documents
+
     logger.info("[Auditor] Extracting text from documents...")
     denial_result = extract_text_from_document(denial_path)
     policy_result = extract_text_from_document(policy_path)
 
-    # Validate extraction succeeded
     if denial_result.get("error") or policy_result.get("error"):
         logger.error(
             "Document reader failed: %s",
@@ -175,24 +158,35 @@ def run_auditor_agent(
         logger.error("One or both input documents are empty.")
         return None
 
-    # Step 2: Build evidence chunks for audit trail
+    # ── Jurisdiction detection ────────────────────────────────────────────────
+    indian_signals = [
+        "cghs", "irdai", "irda", "tpa", "star health", "niva bupa",
+        "hdfc ergo", "care health", "medi assist", "rs.", "rupees", "₹",
+        "apollo", "fortis", "kokilaben", "manipal", "narayana", "rc-",
+        "bima", "lokpal",
+    ]
+    denial_lower = denial_text.lower()
+    detected_jurisdiction = (
+        "India (IRDAI-regulated)"
+        if any(s in denial_lower for s in indian_signals)
+        else "United States (ACA/ERISA)"
+    )
+    logger.info(f"[Auditor] Detected jurisdiction: {detected_jurisdiction}")
+
+    # ── Evidence chunks ───────────────────────────────────────────────────────
     segments = []
     segments.extend(denial_result.get("segments", []))
     segments.extend(policy_result.get("segments", []))
-    # Filter for meaningful segments (min 30 chars)
     evidence_chunks = [
-        seg.strip() for seg in segments 
+        seg.strip() for seg in segments
         if seg and len(seg.strip()) > 30
-    ][:24]  # Limit to 24 chunks to control token usage
+    ][:24]
 
-    # Step 3: Isolate relevant policy excerpt
     policy_excerpt = find_relevant_policy_snippet(policy_text)
-    
-    # Trim inputs to prevent token overflow
     denial_text_trimmed = denial_text[:8000]
     policy_excerpt_trimmed = policy_excerpt[:4000]
 
-    # Step 4: Prepare LLM system instruction (strict JSON output)
+    # ── System instruction ────────────────────────────────────────────────────
     system_instruction = (
         "You are the Auditor Agent.\n"
         "Extract only facts explicitly stated in the insurer's denial letter and policy document.\n"
@@ -203,20 +197,30 @@ def run_auditor_agent(
         '  "insurer_reason_snippet": "string — direct quote of denial rationale from the letter",\n'
         '  "policy_clause_text": "string — exact policy clause text referenced in the denial",\n'
         '  "procedure_denied": "string — exact name of the denied procedure or service",\n'
-        '  "confidence_score": 0.95,\n'
+        '  "jurisdiction": "string — detected jurisdiction, e.g. India or United States",\n'
+        '  "confidence_score": 0.92,\n'  # <-- realistic example, not 0.0
         '  "raw_evidence_chunks": []\n'
         "}\n\n"
         "Rules:\n"
         "- Copy denial_code and insurer_reason_snippet verbatim from the source text.\n"
         "- If multiple procedures are denied, list them comma-separated in procedure_denied.\n"
-        "- If a field is genuinely absent in the source text, use empty string or 0.0.\n"
+        "- If a field is genuinely absent in the source text, use empty string.\n"
         "- Do NOT hallucinate, infer, or add information not present in the documents.\n"
         "- 'raw_evidence_chunks' MUST be an empty list [].\n"
-        "- Output ONLY the JSON object. Nothing else."
+        "- Output ONLY the JSON object. Nothing else.\n\n"
+        "CONFIDENCE SCORE RULES — calculate confidence_score using these exact criteria:\n"
+        "- Start at 0.95\n"
+        "- Subtract 0.10 if denial_code is not explicitly printed in the denial letter\n"
+        "- Subtract 0.10 if insurer_reason_snippet required inference (not a direct quote)\n"
+        "- Subtract 0.10 if policy_clause_text could not be matched to a specific clause\n"
+        "- Subtract 0.05 if procedure_denied had to be inferred from context\n"
+        "- Minimum value is 0.60\n"
+        "- A clear, well-structured denial letter with all fields present scores 0.90–0.95"
     )
 
-    # Step 5: Build user prompt with denial letter and policy excerpt
+    # ── User prompt ───────────────────────────────────────────────────────────
     user_prompt = (
+        f"DETECTED JURISDICTION: {detected_jurisdiction}\n\n"
         "--- DENIAL LETTER ---\n"
         f"{denial_text_trimmed}\n\n"
         "--- RELEVANT POLICY EXCERPT ---\n"
@@ -224,12 +228,11 @@ def run_auditor_agent(
         "Now output the JSON object:"
     )
 
-    # Step 6: Invoke LLM with JSON mode enabled
     logger.info("[Auditor] Sending prompt to LLM...")
     raw_response = client.generate(
         prompt=user_prompt,
         system=system_instruction,
-        temperature=0.0,      # Deterministic output for consistent extraction
+        temperature=0.1,   # slight variation so rubric isn't ignored
         max_tokens=1024,
         json_mode=True
     )
@@ -238,29 +241,28 @@ def run_auditor_agent(
         logger.error("[Auditor] Empty response from LLM.")
         return None
 
-    # Step 7: Parse and validate structured output
+    logger.info(f"[Auditor] Raw response preview: {raw_response[:300]}")
+
     try:
         structured_denial = StructuredDenial.model_validate_json(raw_response)
     except Exception:
-        # Attempt recovery: extract first JSON from response
         logger.warning("[Auditor] Strict JSON parse failed, attempting recovery.")
         recovered_json = extract_first_json(raw_response)
-        
         if not recovered_json:
             logger.error("[Auditor] Could not recover JSON from response.")
             return None
-        
         try:
             structured_denial = StructuredDenial.model_validate(recovered_json)
         except Exception as validation_error:
             logger.error(f"[Auditor] Recovery JSON invalid: {validation_error}")
             return None
 
-    # Step 8: Attach evidence chunks for auditability
     structured_denial.raw_evidence_chunks = evidence_chunks
-    
+
     logger.info(
-        f"[Auditor] SUCCESS — Denial Code: {structured_denial.denial_code}, "
-        f"Procedure: {structured_denial.procedure_denied}"
+        f"[Auditor] SUCCESS — Code: {structured_denial.denial_code}, "
+        f"Procedure: {structured_denial.procedure_denied}, "
+        f"Confidence: {structured_denial.confidence_score}, "
+        f"Jurisdiction: {detected_jurisdiction}"
     )
     return structured_denial
