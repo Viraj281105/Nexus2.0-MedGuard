@@ -118,22 +118,20 @@ from ..tools.pubmed_search import pubmed_search
 
 
 def _derive_query(denial: StructuredDenial) -> str:
-    """
-    Generate PubMed search query from denial details.
-    
-    Extracts procedure name and constructs a search for efficacy evidence.
-    
-    Args:
-        denial: StructuredDenial object from Auditor Agent
-        
-    Returns:
-        PubMed search query string (e.g., "koliscan efficacy")
-    """
     procedure = denial.procedure_denied.strip()
-    # Remove parenthetical content (e.g., "(CPT 12345)")
     procedure = re.sub(r"\(.*?\)", "", procedure).strip()
-    query = f"{procedure} efficacy"
+    # Use denial reason to make query more targeted
+    denial_reason = denial.insurer_reason_snippet.strip()
+    if "medically necessary" in denial_reason.lower() or "not necessary" in denial_reason.lower():
+        query = f"{procedure} medical necessity clinical indication"
+    elif "experimental" in denial_reason.lower():
+        query = f"{procedure} efficacy safety randomized trial"
+    elif "tariff" in denial_reason.lower() or "rate" in denial_reason.lower() or "cghs" in denial_reason.lower():
+        query = f"{procedure} standard of care cost effectiveness"
+    else:
+        query = f"{procedure} efficacy outcomes"
     return query
+
 
 
 def run_clinician_agent(client, denial_details: StructuredDenial, **kwargs) -> EvidenceList:
@@ -198,8 +196,12 @@ def run_clinician_agent(client, denial_details: StructuredDenial, **kwargs) -> E
         prompt = (
             f"Procedure denied: {denial_details.procedure_denied}\n"
             f"Denial reason: {denial_details.insurer_reason_snippet}\n\n"
-            "PubMed articles:\n"
+            "PubMed articles retrieved for this procedure:\n"
             f"{json.dumps(articles_trimmed, indent=2)}\n\n"
+            "For each article, write a summary_of_finding that:\n"
+            "1. States what the study found about the procedure's efficacy or necessity.\n"
+            "2. Explains why this directly counters the insurer's denial reason.\n"
+            "3. Is 1-2 sentences, written for a formal appeal letter.\n"
             "Now output the JSON object matching the schema:"
         )
 
@@ -238,10 +240,15 @@ def run_clinician_agent(client, denial_details: StructuredDenial, **kwargs) -> E
     logger.warning("[Clinician] PubMed yielded 0 results. Falling back to LLM synthesis...")
     
     fallback_system_instruction = (
-        "You are a medical expert. Generate realistic clinical evidence for an insurance appeal.\n"
+        "You are a medical expert summarizing established clinical consensus.\n"
+        "Summarize only well-known, verifiable medical findings about the denied procedure.\n"
+        "Do NOT invent or fabricate PubMed IDs. If a real PMID is not known with certainty, "
+        "use the string 'verified-on-request' as the pubmed_id value.\n"
+        "Focus on: efficacy of the procedure, medical necessity criteria, "
+        "and clinical guidelines (e.g. NICE, WHO, ICMR, ESPEN) that support it.\n"
         "Output STRICT JSON matching this format:\n"
         '{"root": [{"article_title": "...", "summary_of_finding": "...", "pubmed_id": "..."}]}\n'
-        "Include 2-3 articles. Output ONLY JSON."
+        "Include 2-3 items. Output ONLY JSON."
     )
     
     fallback_prompt = (

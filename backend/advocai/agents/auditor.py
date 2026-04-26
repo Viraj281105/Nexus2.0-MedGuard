@@ -59,8 +59,13 @@ def find_relevant_policy_snippet(full_policy_text: str) -> str:
     """
     # Keywords that indicate exclusion or limitation clauses
     exclusion_keywords = [
-        "EXCLUSIONS", "EXCLUSIONS AND LIMITATIONS", "EXPERIMENTAL",
-        "INVESTIGATIVE", "UNPROVEN", "CLINICAL TRIAL", "NOT COVERED"
+        # Universal
+        "EXCLUSIONS", "EXCLUSIONS AND LIMITATIONS", "NOT COVERED", "NON-PAYABLE",
+        # US-style
+        "EXPERIMENTAL", "INVESTIGATIVE", "UNPROVEN", "CLINICAL TRIAL",
+        # Indian insurance specific
+        "CGHS", "SCHEDULE OF RATES", "AGREED TARIFF", "ADMINISTRATIVE CHARGES",
+        "WAITING PERIOD", "PRE-EXISTING", "CLAUSE 4", "SECTION 4",
     ]
     
     # Search for each keyword in the policy text
@@ -190,20 +195,22 @@ def run_auditor_agent(
     # Step 4: Prepare LLM system instruction (strict JSON output)
     system_instruction = (
         "You are the Auditor Agent.\n"
-        "Extract only facts from the insurer's denial letter and policy.\n"
+        "Extract only facts explicitly stated in the insurer's denial letter and policy document.\n"
         "Output STRICT JSON ONLY. No markdown. No explanation. No extra text.\n"
         "Follow this exact JSON format:\n"
         "{\n"
-        '  "denial_code": "string",\n'
-        '  "insurer_reason_snippet": "string",\n'
-        '  "policy_clause_text": "string",\n'
-        '  "procedure_denied": "string",\n'
+        '  "denial_code": "string — exact code from denial letter, e.g. RC-04",\n'
+        '  "insurer_reason_snippet": "string — direct quote of denial rationale from the letter",\n'
+        '  "policy_clause_text": "string — exact policy clause text referenced in the denial",\n'
+        '  "procedure_denied": "string — exact name of the denied procedure or service",\n'
         '  "confidence_score": 0.95,\n'
         '  "raw_evidence_chunks": []\n'
         "}\n\n"
         "Rules:\n"
-        "- If a field is missing in source text, use empty string or 0.0.\n"
-        "- Do NOT hallucinate.\n"
+        "- Copy denial_code and insurer_reason_snippet verbatim from the source text.\n"
+        "- If multiple procedures are denied, list them comma-separated in procedure_denied.\n"
+        "- If a field is genuinely absent in the source text, use empty string or 0.0.\n"
+        "- Do NOT hallucinate, infer, or add information not present in the documents.\n"
         "- 'raw_evidence_chunks' MUST be an empty list [].\n"
         "- Output ONLY the JSON object. Nothing else."
     )

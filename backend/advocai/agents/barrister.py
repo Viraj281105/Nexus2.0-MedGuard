@@ -20,6 +20,19 @@ logger.setLevel(logging.INFO)
 # Directory for debug output (if needed)
 DEBUG_OUTPUT_DIR = "data/output"
 
+def _detect_jurisdiction(denial: any) -> str:
+    """Detect claim jurisdiction from denial details."""
+    text = " ".join([
+        getattr(denial, "insurer_reason_snippet", "") or "",
+        getattr(denial, "policy_clause_text", "") or "",
+        getattr(denial, "denial_code", "") or "",
+        getattr(denial, "procedure_denied", "") or "",
+    ]).lower()
+    indian_signals = ["irdai", "cghs", "irda", "tpa", "star health",
+                      "medi assist", "rs.", "rupees", "apollo", "rc-"]
+    if any(s in text for s in indian_signals):
+        return "india"
+    return "us"
 
 def extract_legal_points(reg: Any) -> List[Dict[str, Any]]:
     """
@@ -165,14 +178,35 @@ def run_barrister_agent(
         legal_text = "- No statutory or regulatory arguments produced."
 
     # Step 3: Build system instruction for the LLM
+    jurisdiction = _detect_jurisdiction(denial)
+
+    if jurisdiction == "india":
+        jurisdiction_instruction = (
+            "You are handling an Indian health insurance dispute governed by IRDAI regulations.\n"
+            "Cite ONLY Indian law: IRDAI Regulations, Insurance Act 1938, Consumer Protection Act 2019, "
+            "Insurance Ombudsman Rules 2017, and IRDAI circulars.\n"
+            "Do NOT cite ERISA, ACA, MHPAEA, or any US statute — these have no legal force in India.\n"
+            "Reference CGHS rate schedule disputes where relevant.\n"
+            "Mention escalation path: Grievance Officer → IRDAI IGMS portal → Insurance Ombudsman.\n"
+        )
+    else:
+        jurisdiction_instruction = (
+            "You are handling a US health insurance dispute.\n"
+            "Cite relevant federal law: ACA, ERISA, MHPAEA, and applicable state mandates.\n"
+        )
+
     system_instruction = (
-        "You are the Barrister Agent — a senior appellate attorney specializing in health insurance disputes.\n"
+        f"You are the Barrister Agent — a senior appellate attorney specializing in health insurance disputes.\n"
+        f"{jurisdiction_instruction}"
         "Your job is to produce a polished, persuasive, fully structured appeal letter.\n"
         "Write in formal legal prose. No placeholders. No incomplete sections.\n"
-        "Use the clinical and regulatory evidence provided.\n"
+        "Ground every clinical claim in the provided PubMed evidence — cite article titles and PMIDs explicitly.\n"
+        "Ground every legal claim in the provided regulatory findings — cite statute names explicitly.\n"
+        "Do not hallucinate statutes, PMIDs, or clinical facts not present in the provided evidence.\n"
         "Do not add any commentary before or after the letter.\n"
         "Output the letter text only."
     )
+
 
     # Step 4: Add critique context if this is a revision attempt
     if critique:
@@ -182,32 +216,45 @@ def run_barrister_agent(
         )
 
     # Step 5: Build user prompt with all evidence
-    prompt = f"""Draft a complete formal insurance appeal letter using the information below.
+    prompt = f"""Draft a complete formal insurance appeal letter using ONLY the information provided below.
 
-DENIAL DETAILS
---------------
-Procedure: {denial.procedure_denied}
-Denial Code: {denial.denial_code}
-Insurer Reason: {denial.insurer_reason_snippet}
-Policy Clause: {denial.policy_clause_text}
+    DENIAL DETAILS
+    --------------
+    Procedure: {denial.procedure_denied}
+    Denial Code: {denial.denial_code}
+    Insurer Reason: {denial.insurer_reason_snippet}
+    Policy Clause: {denial.policy_clause_text}
 
-CLINICAL EVIDENCE
------------------
-{clinical_text}
+    CLINICAL EVIDENCE (cite these explicitly — use article titles and PMIDs in the letter body)
+    -----------------
+    {clinical_text}
 
-REGULATORY FINDINGS
--------------------
-{legal_text}
+    REGULATORY FINDINGS (cite these explicitly — use statute names in the letter body)
+    -------------------
+    {legal_text}
 
-REQUIRED STRUCTURE
-------------------
-1. Subject line referencing the procedure and denial code.
-2. Opening paragraph: summarize the denial and state intent to appeal.
-3. Section I - Clinical Argument: use the clinical evidence above.
-4. Section II - Legal Argument: reference the regulatory findings above.
-5. Conclusion: firm request for reversal and clear next steps.
+    REQUIRED STRUCTURE
+    ------------------
+    1. Subject line: reference the procedure, denial code, and policy/claim number if available.
+    2. Opening paragraph: identify the denial, the denied procedure, and state intent to appeal.
+    3. Section I — Clinical Argument:
+    - For each piece of clinical evidence, name the study and PMID explicitly.
+    - Explain how it directly demonstrates medical necessity for the denied procedure.
+    - Counter the insurer's specific denial reason with the evidence.
+    4. Section II — Legal Argument:
+    - For each regulatory finding, name the statute/regulation explicitly.
+    - Explain precisely how the insurer's denial violates or conflicts with it.
+    - Do NOT cite any law not listed in the REGULATORY FINDINGS above.
+    5. Conclusion:
+    - Firm, specific request for full reversal of the denial.
+    - State the escalation path if the appeal is rejected.
+    - Request written response within the regulatory timeframe.
 
-Write the full letter now:"""
+    IMPORTANT: Do not invent any facts, PMIDs, statute numbers, or clinical findings 
+    not present in the sections above. If evidence is limited, argue from what is provided.
+
+    Write the full letter now:"""
+
 
     # Step 6: Define streaming callback (if emit function provided)
     def stream_callback(chunk: str):
