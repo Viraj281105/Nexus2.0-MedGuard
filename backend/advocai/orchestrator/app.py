@@ -235,11 +235,6 @@ async def _run_pipeline_task(session_id: str):
         session["status"] = "done"
         update_case_status(session_id, "done")
 
-        # ── PDF compilation with detailed error logging ───────────────────
-        # Previously this was a silent try/except — the PDF never got built
-        # and download always returned 404. Now we log the full error and
-        # fall back to writing the plain-text appeal letter as a PDF so the
-        # download endpoint always has something to serve.
         pdf_path = Path(f"sessions/{session_id}/appeal_packet.pdf")
         try:
             from ..tools.pdf_compiler import compile_appeal_packet
@@ -251,8 +246,6 @@ async def _run_pipeline_task(session_id: str):
         except Exception as pdf_error:
             logger.error(f"PDF compile failed for {session_id}: {pdf_error}", exc_info=True)
 
-            # Fallback: write the barrister's appeal letter as a minimal PDF
-            # using the built-in pdf_generator so the download link still works.
             try:
                 appeal_text = ""
                 if result and "barrister" in result:
@@ -271,7 +264,9 @@ async def _run_pipeline_task(session_id: str):
             except Exception as fallback_error:
                 logger.error(f"Fallback PDF also failed: {fallback_error}", exc_info=True)
 
-        emit({"type": "pipeline_done", "session_id": session_id})
+        # NOTE: No emit(pipeline_done) here — the live-stream loop sends
+        # "close" when it detects session["status"] == "done". A redundant
+        # pipeline_done event caused double eventSource.close() on the frontend.
 
     except Exception as error:
         session["status"] = "error"
@@ -289,13 +284,13 @@ async def stream_case(session_id: str):
     """
     SSE endpoint for real-time pipeline updates.
 
-    FIX: Previously raised 404 immediately if the session wasn't yet in
-    ACTIVE_SESSIONS (race condition between page load and pipeline start).
-    Now waits up to 10 seconds for the session to appear before giving up.
+    Waits up to 10 s for the session to appear (handles the race condition
+    where the frontend connects before the background task has populated
+    ACTIVE_SESSIONS).
+
+    On late connect (pipeline already done), replays the full result as
+    synthetic events so the frontend always renders the letter and score.
     """
-    # Wait up to 10 s for the session to be registered (handles race condition
-    # where the frontend connects before the background task has populated
-    # ACTIVE_SESSIONS, e.g. very fast page navigation after form submit).
     for _ in range(100):
         if session_id in ACTIVE_SESSIONS:
             break
@@ -304,57 +299,77 @@ async def stream_case(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found or expired")
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        if session_id not in ACTIVE_SESSIONS:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Session not found'})}\n\n"
+            return
+
         session = ACTIVE_SESSIONS[session_id]
+
+        # ── Late-connect replay: pipeline already finished ────────────────
+        if session["status"] == "done" and session.get("result"):
+            result = session["result"]
+
+            # FIX 1: barrister result may be a dict, not a plain string.
+            # Extract the letter text defensively before yielding it as a chunk.
+            _b = result.get("barrister", "")
+            # Handle all possible types: str, dict, Pydantic model, or anything else
+            if isinstance(_b, str):
+                barrister_letter = _b
+            elif isinstance(_b, dict):
+                barrister_letter = _b.get("appeal_letter") or _b.get("letter") or _b.get("text") or str(_b)
+            elif hasattr(_b, "appeal_letter"):          # Pydantic model
+                barrister_letter = str(_b.appeal_letter)
+            elif hasattr(_b, "model_dump"):             # Pydantic v2
+                d = _b.model_dump()
+                barrister_letter = d.get("appeal_letter") or d.get("letter") or d.get("text") or str(d)
+            elif hasattr(_b, "dict"):                   # Pydantic v1
+                d = _b.dict()
+                barrister_letter = d.get("appeal_letter") or d.get("letter") or d.get("text") or str(d)
+            else:
+                barrister_letter = str(_b)
+
+            logger.info(f"REPLAY barrister_letter length: {len(barrister_letter)}, preview: {barrister_letter[:100]}")
+            barrister_letter = (
+                _b if isinstance(_b, str)
+                else _b.get("appeal_letter", json.dumps(_b))
+            )
+
+            # 1. Stream the letter first — text panel must be populated before
+            #    "close" fires and sets pipelineDone=true, otherwise the
+            #    placeholder text renders instead of the letter.
+            if barrister_letter:
+                yield f"data: {json.dumps({'type': 'agent_stream', 'agent': 'barrister', 'chunk': barrister_letter})}\n\n"
+
+            # 2. Mark every agent done. Skip agent_start events — jumping
+            #    straight to "done" is correct for a completed-pipeline replay.
+            #
+            #    FIX 2: judge payload must be nested under "output" because
+            #    the frontend reads data.output?.score (not data.score).
+            #    We use "output" for all agents for consistency.
+            for agent in ["auditor", "clinician", "regulatory", "barrister", "judge"]:
+                agent_result = result.get(agent)
+                if agent_result is None:
+                    continue
+                yield f"data: {json.dumps({'type': 'agent_done', 'agent': agent, 'output': agent_result})}\n\n"
+
+            # 3. Close — triggers setPipelineDone(true) in the frontend.
+            #    Letter is already in streamChunks by now so the panel renders
+            #    the text rather than the "will appear here" placeholder.
+            yield f"data: {json.dumps({'type': 'close'})}\n\n"
+            return
+
+        # ── Live-stream path (pipeline still running) ─────────────────────
         sent_index = 0
         max_wait = 120
-
-        # FIX: If the pipeline already completed before the SSE client connected
-        # (common — the browser navigates after submit, pipeline runs in background),
-        # the agent_stream events were emitted before anyone was listening so the
-        # text panel shows empty. Replay the full letter as a single chunk now.
-        if session["status"] == "done":
-            result = session.get("result") or {}
-            barrister = result.get("barrister")
-            if barrister:
-                letter_text = (
-                    barrister if isinstance(barrister, str)
-                    else barrister.get("appeal_letter", str(barrister))
-                )
-                if letter_text:
-                    # Emit synthetic agent lifecycle events so the UI pipeline
-                    # indicators all show green, then deliver the full letter.
-                    for agent in ["auditor", "clinician", "regulatory", "barrister", "judge"]:
-                        yield f"data: {json.dumps({'type': 'agent_done', 'agent': agent, 'output': {}})}\n\n"
-
-                    yield f"data: {json.dumps({'type': 'agent_stream', 'agent': 'barrister', 'chunk': letter_text})}\n\n"
-
-                    # Also emit judge score if available
-                    judge = result.get("judge")
-                    if judge:
-                        score = (
-                            judge.get("overall_score")
-                            if isinstance(judge, dict)
-                            else getattr(judge, "overall_score", None)
-                        )
-                        if score is not None:
-                            yield f"data: {json.dumps({'type': 'agent_done', 'agent': 'judge', 'output': {'score': score}})}\n\n"
-
-                    yield f"data: {json.dumps({'type': 'close'})}\n\n"
-                    return
-
-        # Normal path: pipeline still running, stream events as they arrive
         for _ in range(max_wait * 10):
             events = session["events"]
-
             while sent_index < len(events):
                 event = events[sent_index]
                 sent_index += 1
                 yield f"data: {json.dumps(event)}\n\n"
-
             if session["status"] in ("done", "error"):
                 yield f"data: {json.dumps({'type': 'close'})}\n\n"
                 return
-
             await asyncio.sleep(0.1)
 
         yield f"data: {json.dumps({'type': 'timeout'})}\n\n"
@@ -376,19 +391,11 @@ async def stream_case(session_id: str):
 
 @app.get("/api/case/{session_id}/status")
 async def get_status(session_id: str):
-    """
-    Get the current status of a case.
-
-    FIX: Previously 404'd if session wasn't in ACTIVE_SESSIONS (e.g. after
-    server restart). Now falls back to the database record for status.
-    """
     case = get_case_by_id(MockUser.id, session_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
     session = ACTIVE_SESSIONS.get(session_id, {})
-    # Prefer in-memory status (more up-to-date during active run),
-    # fall back to DB status (survives server restarts).
     status = session.get("status") or case.status
 
     return {
@@ -455,13 +462,6 @@ async def rescore_case(session_id: str, request: RescoreRequest):
 
 @app.get("/api/case/{session_id}/download")
 async def download_packet(session_id: str):
-    """
-    Download the complete appeal packet as a PDF.
-
-    FIX: Added clearer error message distinguishing 'still processing'
-    from 'PDF generation failed', and verified session existence first.
-    """
-    # Check session/case exists at all
     case = get_case_by_id(MockUser.id, session_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -469,7 +469,6 @@ async def download_packet(session_id: str):
     pdf_path = Path(f"sessions/{session_id}/appeal_packet.pdf")
 
     if not pdf_path.exists():
-        # Give a more informative error depending on pipeline state
         status = ACTIVE_SESSIONS.get(session_id, {}).get("status") or case.status
         if status in ("queued", "running"):
             raise HTTPException(status_code=202, detail="PDF not ready yet — pipeline still running")

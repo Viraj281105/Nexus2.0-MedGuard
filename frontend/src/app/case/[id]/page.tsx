@@ -25,10 +25,6 @@ import { Button } from "@/components/Button";
 import { apiUrl } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/Card";
 
-// NOTE: viewport cannot be exported from a "use client" component.
-// It has been moved to app/layout.tsx as a shared export instead.
-// Exporting it here caused: TypeError: Cannot read properties of undefined (reading '$$typeof')
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -154,8 +150,15 @@ export default function CasePage() {
 
         case "agent_done":
           setAgentStates((prev) => ({ ...prev, [data.agent]: "done" }));
+          // FIX: judge score is nested under data.output (not data.score).
+          // The backend wraps all agent_done payloads under the "output" key.
+          // For judge specifically: data.output = { overall_score: N, … }
           if (data.agent === "judge" && data.output?.score !== undefined) {
             setJudgeScore(data.output.score);
+          }
+          // Also handle overall_score as the key (matches the judge result dict shape)
+          if (data.agent === "judge" && data.output?.overall_score !== undefined) {
+            setJudgeScore(data.output.overall_score);
           }
           break;
 
