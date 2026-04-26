@@ -8,7 +8,6 @@ import {
   FileSearch,
   Zap,
   CheckCircle2,
-  ArrowRight,
   CircleDollarSign,
   BrainCircuit,
   Activity,
@@ -72,6 +71,58 @@ declare global {
   }
 }
 
+// ---------------------------------------------------------------------------
+// FIX: createRecognition builds a fresh SpeechRecognition instance each time.
+//
+// The Web Speech API does NOT allow restarting a stopped instance — calling
+// .start() on an instance that has already ended throws a network error in
+// Chrome. The fix is to create a new instance on every recording session
+// instead of reusing one created at mount time.
+//
+// continuous: false  — one utterance per tap, then auto-stops cleanly.
+//                      continuous:true holds a persistent Google server
+//                      connection that breaks on localhost and most networks.
+// ---------------------------------------------------------------------------
+function createRecognition(
+  onResult: (transcript: string) => void,
+  onError: (error: string) => void,
+  onEnd: () => void
+): SpeechRecognitionInstance | null {
+  if (typeof window === "undefined") return null;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+
+  const recognition = new SR();
+  recognition.continuous = false; // fresh instance per session; no persistent connection
+  recognition.interimResults = true;
+  recognition.lang = "en-US";
+
+  recognition.onresult = (event: SpeechRecognitionEvent) => {
+    let interim = "";
+    let final = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) final += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    onResult(final || interim);
+  };
+
+  recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+    if (event.error === "no-speech" || event.error === "network") {
+      onEnd();
+      return;
+    }
+    console.error("Speech recognition error:", event.error);
+    onError(event.error);
+    onEnd();
+  };
+
+  recognition.onend = onEnd;
+
+  return recognition;
+}
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -84,63 +135,80 @@ export default function Home() {
 
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
+
+  // FIX: lazy initializer runs once on the client, avoiding a synchronous
+  // setState inside a useEffect (which triggers cascading renders).
+  const [speechSupported] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+  );
+
+  // FIX: ref holds the *current active* recognition instance (or null).
+  // A new instance is created on every startListening call.
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = "en-US";
-
-        recognition.onresult = (event: SpeechRecognitionEvent) => {
-          let interimTranscript = "";
-          let finalTranscript = "";
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            const result = event.results[i];
-            if (result.isFinal) {
-              finalTranscript += result[0].transcript;
-            } else {
-              interimTranscript += result[0].transcript;
-            }
-          }
-          setTranscript(finalTranscript || interimTranscript);
-        };
-
-        recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-          console.error("Speech recognition error", event.error);
-          setIsListening(false);
-        };
-
-        recognition.onend = () => {
-          setIsListening(false);
-        };
-
-        recognitionRef.current = recognition;
-      }
-    }
-
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
+      // Clean up any active session on unmount.
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
     };
   }, []);
 
-  const toggleListening = useCallback(() => {
-    if (!recognitionRef.current) return;
+  const stopListening = useCallback(() => {
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    setIsListening(false);
+  }, []);
 
-    if (isListening) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-    } else {
-      setTranscript("");
-      recognitionRef.current.start();
-      setIsListening(true);
+  const startListening = useCallback(() => {
+    setTranscript("");
+
+    const recognition = createRecognition(
+      (text) => setTranscript(text),
+      (error) => {
+        addToast(
+          error === "not-allowed"
+            ? "Microphone access denied. Please allow microphone permissions."
+            : `Speech recognition error: ${error}`,
+          "error"
+        );
+        setIsListening(false);
+        recognitionRef.current = null;
+      },
+      () => {
+        setIsListening(false);
+        recognitionRef.current = null;
+      }
+    );
+
+    if (!recognition) {
+      addToast("Speech recognition is not supported in this browser.", "error");
+      return;
     }
-  }, [isListening]);
+
+    recognitionRef.current = recognition;
+
+    try {
+      recognition.start();
+      setIsListening(true);
+    } catch (err) {
+      // start() throws if called while another instance is still active
+      // (shouldn't happen with fresh instances, but guard anyway).
+      console.error("Failed to start recognition:", err);
+      recognitionRef.current = null;
+      setIsListening(false);
+    }
+  }, []);
+
+  const toggleListening = useCallback(() => {
+    if (isListening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+  }, [isListening, startListening, stopListening]);
 
   const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/jpg"];
 
@@ -211,10 +279,13 @@ export default function Home() {
       if (!response.ok) throw new Error("Failed to upload");
 
       const data = await response.json();
-      localStorage.setItem("medguard_results", JSON.stringify({
-        ...data,
-        analysisType: analysisType,
-      }));
+      localStorage.setItem(
+        "medguard_results",
+        JSON.stringify({
+          ...data,
+          analysisType: analysisType,
+        })
+      );
       localStorage.setItem("medguard_pending_file_name", file.name);
       addToast("File uploaded successfully", "success");
       router.push("/submit");
@@ -356,7 +427,10 @@ export default function Home() {
                   Upload Document
                 </button>
                 <button
-                  onClick={() => setInputMode("voice")}
+                  onClick={() => {
+                    setInputMode("voice");
+                    if (isListening) stopListening();
+                  }}
                   className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 ${
                     inputMode === "voice"
                       ? "bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] text-white shadow-md"
@@ -505,34 +579,44 @@ export default function Home() {
                     className="space-y-5"
                   >
                     <div className="flex flex-col items-center gap-6 py-6">
-                      <button
-                        onClick={toggleListening}
-                        className={`relative flex items-center justify-center w-28 h-28 rounded-full transition-all duration-500 ${
-                          isListening
-                            ? "bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] shadow-xl shadow-blue-300/50 scale-110"
-                            : "bg-gradient-to-br from-blue-100 to-emerald-100 border-2 border-blue-200 shadow-md hover:shadow-lg hover:scale-105"
-                        }`}
-                      >
-                        <AnimatePresence mode="wait">
+                      {!speechSupported ? (
+                        <div className="text-center space-y-2 text-sm text-slate-500">
+                          <MicOff className="w-10 h-10 mx-auto text-slate-400" />
+                          <p>Speech recognition is not supported in this browser.</p>
+                          <p className="text-xs">Try Chrome or Edge on desktop.</p>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={toggleListening}
+                          className={`relative flex items-center justify-center w-28 h-28 rounded-full transition-all duration-500 ${
+                            isListening
+                              ? "bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] shadow-xl shadow-blue-300/50 scale-110"
+                              : "bg-gradient-to-br from-blue-100 to-emerald-100 border-2 border-blue-200 shadow-md hover:shadow-lg hover:scale-105"
+                          }`}
+                        >
+                          <AnimatePresence mode="wait">
+                            {isListening ? (
+                              <motion.div
+                                key="listening"
+                                initial={{ scale: 0 }}
+                                animate={{ scale: 1 }}
+                                exit={{ scale: 0 }}
+                                className="absolute inset-0 rounded-full bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] opacity-30 animate-ping"
+                              />
+                            ) : null}
+                          </AnimatePresence>
                           {isListening ? (
-                            <motion.div
-                              key="listening"
-                              initial={{ scale: 0 }}
-                              animate={{ scale: 1 }}
-                              exit={{ scale: 0 }}
-                              className="absolute inset-0 rounded-full bg-gradient-to-r from-[#4f7df3] via-[#4fc3a1] to-[#56c271] opacity-30 animate-ping"
-                            />
-                          ) : null}
-                        </AnimatePresence>
-                        {isListening ? (
-                          <MicOff className="w-10 h-10 text-white relative z-10" />
-                        ) : (
-                          <Mic className="w-10 h-10 text-blue-600 relative z-10" />
-                        )}
-                      </button>
+                            <MicOff className="w-10 h-10 text-white relative z-10" />
+                          ) : (
+                            <Mic className="w-10 h-10 text-blue-600 relative z-10" />
+                          )}
+                        </button>
+                      )}
 
                       <p className="text-sm font-medium text-slate-700">
-                        {isListening ? "Listening... Tap to stop" : "Tap to speak your query"}
+                        {isListening
+                          ? "Listening... Tap to stop"
+                          : "Tap to speak your query"}
                       </p>
 
                       {transcript && (
@@ -559,7 +643,7 @@ export default function Home() {
                         </>
                       )}
 
-                      {!transcript && !isListening && (
+                      {!transcript && !isListening && speechSupported && (
                         <div className="text-center space-y-2">
                           <p className="text-xs text-slate-400">Try saying:</p>
                           <p className="text-sm text-slate-500 italic">
