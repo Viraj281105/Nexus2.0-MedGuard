@@ -5,7 +5,7 @@ and policy documents. Maps raw text into a standardized format for downstream ag
 """
 
 from pydantic import BaseModel, Field
-from advocai.tools.document_reader import extract_text_from_document
+from ..tools.document_reader import extract_text_from_document
 from typing import List, Optional, Dict, Any, ClassVar
 import re
 import json

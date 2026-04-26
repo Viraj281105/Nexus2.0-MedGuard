@@ -1,25 +1,6 @@
 // ---------------------------------------------------------------------------
 // lib/api.ts — API client helpers for the frontend
-// ---------------------------------------------------------------------------
-//
-// Centralised module for:
-// - Building absolute API URLs from relative paths
-// - Managing the JWT access token and user profile in localStorage
-// - Making authenticated fetch requests with automatic Bearer token injection
-//
-// All localStorage access is guarded with a `typeof window` check so this
-// module is safe to import in Next.js server-side rendering contexts.
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/**
- * Base URL for all API requests.
- * Reads from the `NEXT_PUBLIC_API_URL` environment variable at build time.
- * Falls back to an empty string (relative URLs) when not configured, which
- * works when the frontend and backend are served from the same origin.
- */
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 /** localStorage key used for the JWT access token. */

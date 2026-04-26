@@ -114,7 +114,7 @@ def _extract_first_json(text: str) -> Optional[dict]:
 
 
 # Import PubMed search tool (may fail if dependencies missing)
-from advocai.tools.pubmed_search import pubmed_search
+from ..tools.pubmed_search import pubmed_search
 
 
 def _derive_query(denial: StructuredDenial) -> str:

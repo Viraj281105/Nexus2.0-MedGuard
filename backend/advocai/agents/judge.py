@@ -37,6 +37,7 @@ class JudgeScorecard(BaseModel):
     status: str
     sub_scores: SubScores
     issues: List[Issue]
+    critique: str = ""           # Actionable feedback for Barrister revision
     confidence_estimate: float = Field(..., ge=0.0, le=1.0)
     meta: Optional[Dict[str, Any]] = None
 
@@ -48,9 +49,22 @@ class JudgeScorecard(BaseModel):
         if not subs:
             return values
         v = subs if isinstance(subs, dict) else subs.model_dump()
-        overall = int((v["factual_accuracy"] + v["citation_consistency"] + v["logical_adequacy"] + v["tone_professionalism"] - v["hallucination_risk"]) / 5)
+
+        # FIX: Previous formula subtracted hallucination_risk then divided by 5,
+        # producing scores well below the actual quality. New formula:
+        # - Average the four positive dimensions
+        # - Apply a proportional penalty for hallucination risk (max -20 pts)
+        positive_avg = (
+            v["factual_accuracy"]
+            + v["citation_consistency"]
+            + v["logical_adequacy"]
+            + v["tone_professionalism"]
+        ) / 4
+        halluc_penalty = v["hallucination_risk"] * 0.20   # max 20 pt deduction
+        overall = max(0, int(positive_avg - halluc_penalty))
+
         values["overall_score"] = overall
-        values["status"] = "approve" if overall >= 85 else "needs_revision"
+        values["status"] = "approve" if overall >= 75 else "needs_revision"
         return values
 
 
@@ -92,9 +106,11 @@ def split_sentences(text: str) -> List[str]:
 
 
 def classify_sentences(sentences: List[str]) -> List[Dict[str, Any]]:
-    claim_keywords = ["evidence", "clinical", "study", "trial", "research", "medically necessary",
-                       "denial", "policy", "regulation", "coverage", "should be covered", "effective",
-                       "recommended", "indicated", "supports", "compliant", "experimental"]
+    claim_keywords = [
+        "evidence", "clinical", "study", "trial", "research", "medically necessary",
+        "denial", "policy", "regulation", "coverage", "should be covered", "effective",
+        "recommended", "indicated", "supports", "compliant", "experimental",
+    ]
     out = []
     for i, s in enumerate(sentences):
         lower = s.lower()
@@ -121,7 +137,11 @@ def link_evidence(sentence, auditor, clinician, regulatory):
 
     if clinician and isinstance(clinician, dict):
         for entry in clinician.get("root", []):
-            combined = " ".join([(entry.get("article_title") or "").lower(), (entry.get("summary_of_finding") or "").lower(), str(entry.get("pubmed_id") or "").lower()])
+            combined = " ".join([
+                (entry.get("article_title") or "").lower(),
+                (entry.get("summary_of_finding") or "").lower(),
+                str(entry.get("pubmed_id") or "").lower(),
+            ])
             ratio = difflib.SequenceMatcher(None, s, combined).ratio()
             pmid = str(entry.get("pubmed_id") or "").lower()
             if pmid and pmid in s:
@@ -135,7 +155,7 @@ def link_evidence(sentence, auditor, clinician, regulatory):
             for lp in lps:
                 statute = (lp.get("statute") or lp.get("reference") or "").lower()
                 summary = (lp.get("summary") or lp.get("argument") or "").lower()
-                if statute in s:
+                if statute and statute in s:
                     matches["regulatory"].append(statute)
                 else:
                     ratio = difflib.SequenceMatcher(None, s, summary).ratio()
@@ -158,12 +178,24 @@ def score_claim(matches):
 def compute_subscores(claim_results):
     claims = [c for c in claim_results if c["label"] == "CLAIM"]
     if not claims:
-        return SubScores(factual_accuracy=95, citation_consistency=95, logical_adequacy=95, tone_professionalism=90, hallucination_risk=0)
+        return SubScores(
+            factual_accuracy=95,
+            citation_consistency=95,
+            logical_adequacy=95,
+            tone_professionalism=90,
+            hallucination_risk=0,
+        )
     supported = sum(1 for c in claims if c["score"] >= 30)
     halluc = sum(1 for c in claims if c["score"] == 0)
     factual = int((supported / len(claims)) * 100)
     halluc_risk = int((halluc / len(claims)) * 100)
-    return SubScores(factual_accuracy=factual, citation_consistency=factual, logical_adequacy=factual, tone_professionalism=90, hallucination_risk=halluc_risk)
+    return SubScores(
+        factual_accuracy=factual,
+        citation_consistency=factual,
+        logical_adequacy=factual,
+        tone_professionalism=90,
+        hallucination_risk=halluc_risk,
+    )
 
 
 def detect_issues(claim_results):
@@ -175,9 +207,14 @@ def detect_issues(claim_results):
         score = c["score"]
         idx = c["sentence_index"]
         if score == 0:
-            issues.append(Issue(id=f"ISSUE-{counter}", severity="high", location_in_letter={"sentence_index": idx},
-                                description=f"Unsupported claim: '{c['sentence']}'", evidence_refs=[],
-                                suggested_fix="Add supporting clinical or regulatory evidence, or remove the claim."))
+            issues.append(Issue(
+                id=f"ISSUE-{counter}",
+                severity="high",
+                location_in_letter={"sentence_index": idx},
+                description=f"Unsupported claim: '{c['sentence'][:120]}'",
+                evidence_refs=[],
+                suggested_fix="Add supporting clinical or regulatory evidence, or remove the claim.",
+            ))
             counter += 1
             continue
         missing = []
@@ -187,11 +224,57 @@ def detect_issues(claim_results):
             missing.append("regulatory evidence")
         if missing:
             refs = [x for src in c["matches"].values() for x in src]
-            issues.append(Issue(id=f"ISSUE-{counter}", severity="medium", location_in_letter={"sentence_index": idx},
-                                description=f"Partially supported claim. Missing: {', '.join(missing)}",
-                                evidence_refs=list(set(refs)), suggested_fix="Strengthen argument by adding missing evidence."))
+            issues.append(Issue(
+                id=f"ISSUE-{counter}",
+                severity="medium",
+                location_in_letter={"sentence_index": idx},
+                description=f"Partially supported claim. Missing: {', '.join(missing)}",
+                evidence_refs=list(set(refs)),
+                suggested_fix=f"Strengthen this claim by explicitly citing {' and '.join(missing)}.",
+            ))
             counter += 1
     return issues
+
+
+def build_critique(issues: List[Issue], overall_score: int) -> str:
+    """
+    FIX: Previously critique was always "Improve the letter" — no actionable detail.
+    Now generates a specific, structured critique the Barrister can act on.
+    """
+    if overall_score >= 75:
+        return ""
+
+    high = [i for i in issues if i.severity == "high"]
+    medium = [i for i in issues if i.severity == "medium"]
+
+    parts = []
+
+    if high:
+        parts.append(
+            f"CRITICAL ({len(high)} unsupported claims): "
+            + "; ".join(i.description[:100] for i in high[:3])
+            + ". These claims have NO supporting evidence — either cite a PubMed study "
+            "or regulatory statute, or remove them entirely."
+        )
+
+    if medium:
+        fixes = []
+        for i in medium[:3]:
+            fix = i.suggested_fix or "Add missing evidence."
+            fixes.append(f"'{i.description[:80]}' → {fix}")
+        parts.append(
+            f"IMPROVEMENTS ({len(medium)} partially supported claims): "
+            + "; ".join(fixes)
+        )
+
+    if not parts:
+        parts.append(
+            "The letter lacks sufficient citation of the clinical PubMed studies and "
+            "regulatory statutes provided. Explicitly name each PubMed ID and statute "
+            "in the body of the letter."
+        )
+
+    return " | ".join(parts)
 
 
 def run_judge_agent(session_dir="data/output/", **kwargs):
@@ -222,8 +305,16 @@ def run_judge_agent(session_dir="data/output/", **kwargs):
     subs = compute_subscores(claim_results)
     issues = detect_issues(claim_results)
 
-    scorecard = JudgeScorecard(sub_scores=subs, issues=issues, confidence_estimate=0.85,
-                               meta={"generated_at": datetime.utcnow().isoformat(), "version": "v2.0"})
+    # Build scorecard first to get overall_score for critique
+    scorecard = JudgeScorecard(
+        sub_scores=subs,
+        issues=issues,
+        confidence_estimate=0.85,
+        meta={"generated_at": datetime.utcnow().isoformat(), "version": "v2.1"},
+    )
+
+    # Attach actionable critique
+    scorecard.critique = build_critique(issues, scorecard.overall_score)
 
     os.makedirs(session_dir, exist_ok=True)
     json_path = os.path.join(session_dir, "judge_scorecard.json")

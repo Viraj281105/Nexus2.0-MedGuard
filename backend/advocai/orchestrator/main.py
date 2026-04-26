@@ -29,14 +29,14 @@ load_dotenv(dotenv_path=env_path)
 from pydantic import BaseModel
 
 # Import all agent functions
-from advocai.agents.auditor import run_auditor_agent, StructuredDenial
-from advocai.agents.clinician import run_clinician_agent, EvidenceList
-from advocai.agents.regulatory import run_regulatory_agent
-from advocai.agents.barrister import run_barrister_agent
-from advocai.agents.judge import run_judge_agent
+from ..agents.auditor import run_auditor_agent, StructuredDenial
+from ..agents.clinician import run_clinician_agent, EvidenceList
+from ..agents.regulatory import run_regulatory_agent
+from ..agents.barrister import run_barrister_agent
+from ..agents.judge import run_judge_agent
 
 # Session management for checkpointing and resume
-from advocai.storage.session_manager import SessionManager
+from ..storage.session_manager import SessionManager
 
 # Configure logging
 logging.basicConfig(
