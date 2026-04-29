@@ -77,31 +77,31 @@ When a denial is submitted, five specialized AI agents execute sequentially. Eve
 Upload Denial + Policy PDF
          │
          ▼
-┌─────────────────────┐
-│  1. Document Auditor│  Extracts denial reason, policy clauses, coverage gaps
-└──────────┬──────────┘
+┌───────────────────────┐
+│  1. Document Auditor  │  Extracts denial reason, policy clauses, coverage gaps
+└──────────┬────────────┘
+           │
+           ▼
+┌────────────────────────┐
+│  2. Clinical Reviewer  │  Finds medical necessity evidence, PubMed references
+└───────────┬────────────┘
+           │
+           ▼
+┌──────────────────┐
+│  3. Regulatory   │  Searches IRDAI circulars + CGHS guidelines via RAG
+│     Advisor      │  (vector store, no hallucinated citations)
+└──────────┬───────┘
            │
            ▼
 ┌──────────────────────┐
-│  2. Clinical Reviewer│  Finds medical necessity evidence, PubMed references
+│  4. Appeal Drafter   │  Writes formal, legally-sound appeal letter
+│     (STREAMS LIVE)   │  Every token appears in real-time on screen
 └──────────┬───────────┘
            │
            ▼
-┌─────────────────────┐
-│  3. Regulatory      │  Searches IRDAI circulars + CGHS guidelines via RAG
-│     Advisor         │  (vector store, no hallucinated citations)
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  4. Appeal Drafter  │  Writes formal, legally-sound appeal letter
-│     (STREAMS LIVE)  │  Every token appears in real-time on screen
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  5. Quality Reviewer│  Scores appeal 0–100, polishes tone and structure
-└──────────┬──────────┘
+┌───────────────────────┐
+│  5. Quality Reviewer  │  Scores appeal 0–100, polishes tone and structure
+└──────────┬────────────┘
            │
            ▼
      📄 PDF Appeal Letter
